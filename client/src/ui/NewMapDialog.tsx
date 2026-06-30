@@ -17,7 +17,8 @@ export default function NewMapDialog({ onClose }: { onClose: () => void }) {
   const [height, setHeight] = useState(15)
   const [orientation, setOrientation] = useState<Orientation>('pointy')
   const [shape, setShape] = useState<MapShape>('rectangular')
-  const [baseTerrain, setBaseTerrain] = useState('')
+  // Default: nuova mappa interamente ad acqua (l'utente può cambiare il terreno di base).
+  const [baseTerrain, setBaseTerrain] = useState('water')
   const [playersAtCenter, setPlayersAtCenter] = useState(true)
 
   const clampDim = (v: number) => Math.max(MIN_DIM, Math.min(MAX_DIM, Math.round(v || 0)))
@@ -104,6 +105,7 @@ export default function NewMapDialog({ onClose }: { onClose: () => void }) {
             ))}
           </select>
         </label>
+        <p className="hint">{t('newMap.baseTerrainHint')}</p>
 
         <label className="check-row">
           <input
