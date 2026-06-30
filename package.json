@@ -1,0 +1,23 @@
+{
+  "name": "hexjourney-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "client",
+    "shared",
+    "worker"
+  ],
+  "scripts": {
+    "dev": "concurrently -n client,worker -c cyan,magenta \"npm run dev:client\" \"npm run dev:worker\"",
+    "dev:client": "npm -w client run dev",
+    "build:client": "npm -w client run build",
+    "preview:client": "npm -w client run preview",
+    "dev:worker": "npm -w worker run dev",
+    "deploy:worker": "npm -w worker run deploy",
+    "typecheck": "npm -w client run typecheck && npm -w worker run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

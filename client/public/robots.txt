@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# TODO deploy: sostituisci con il dominio reale
+Sitemap: https://hexjourney.pages.dev/sitemap.xml

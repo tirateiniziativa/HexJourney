@@ -1,0 +1,12 @@
+{
+  "name": "HexJourney — Hex Map Builder for D&D Hexcrawls",
+  "short_name": "HexJourney",
+  "description": "Free hexagonal map builder for D&D and TTRPG hexcrawls.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#13131a",
+  "theme_color": "#13131a",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" }
+  ]
+}

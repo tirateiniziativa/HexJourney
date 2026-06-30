@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "terrains": [
+    { "id": "plains", "name": "Pianura", "category": "terrain", "color": "#8a9a55" },
+    { "id": "forest", "name": "Foresta", "category": "terrain", "color": "#3e6b3a" },
+    { "id": "mountain", "name": "Montagna", "category": "terrain", "color": "#8b7d6b" },
+    { "id": "hills", "name": "Colline", "category": "terrain", "color": "#a8a05c" },
+    { "id": "desert", "name": "Deserto", "category": "terrain", "color": "#d8c188" },
+    { "id": "mesa", "name": "Mesa", "category": "terrain", "color": "#bf7a47" },
+    { "id": "swamp", "name": "Palude", "category": "terrain", "color": "#5b6b47" },
+    { "id": "volcano", "name": "Vulcano", "category": "terrain", "color": "#5a342e" },
+    { "id": "water", "name": "Acqua", "category": "terrain", "color": "#3a6ea5", "water": true },
+    { "id": "deepwater", "name": "Acqua profonda", "category": "terrain", "color": "#1f4061", "water": true }
+  ],
+  "overlays": [
+    { "id": "river", "name": "Fiume", "category": "overlay", "color": "#4aa3df", "shape": "line", "on": "land" },
+    { "id": "road", "name": "Strada", "category": "overlay", "color": "#b08d57", "shape": "line", "on": "land" },
+    { "id": "snow", "name": "Neve", "category": "overlay", "color": "#e8eef2", "shape": "effect", "on": "land" },
+    { "id": "volcanic", "name": "Terra vulcanica", "category": "overlay", "color": "#8a3b2e", "shape": "effect", "on": "land" },
+    { "id": "ice", "name": "Ghiaccio", "category": "overlay", "color": "#cfe6f2", "shape": "effect", "on": "water" },
+    { "id": "ruins", "name": "Rovine", "category": "overlay", "color": "#cfc9b8", "shape": "symbol", "on": "both" },
+    { "id": "village", "name": "Villaggio", "category": "overlay", "color": "#e6b422", "shape": "symbol", "on": "both" },
+    { "id": "city", "name": "Città", "category": "overlay", "color": "#d98c3a", "shape": "symbol", "on": "both" },
+    { "id": "fortress", "name": "Fortezza", "category": "overlay", "color": "#9aa0aa", "shape": "symbol", "on": "both" },
+    { "id": "cave", "name": "Caverna", "category": "overlay", "color": "#6b5b4a", "shape": "symbol", "on": "both" },
+    { "id": "sanctuary", "name": "Santuario", "category": "overlay", "color": "#c9a3e0", "shape": "symbol", "on": "both" },
+    { "id": "dungeon", "name": "Dungeon generico", "category": "overlay", "color": "#b0504b", "shape": "symbol", "on": "both" },
+    { "id": "oasis", "name": "Oasi", "category": "overlay", "color": "#3fb6a0", "shape": "symbol", "on": "land" },
+    { "id": "reef", "name": "Barriera corallina", "category": "overlay", "color": "#e0788f", "shape": "symbol", "on": "water" },
+    { "id": "shoal", "name": "Secca", "category": "overlay", "color": "#d8c98f", "shape": "symbol", "on": "water" }
+  ]
+}
