@@ -2,7 +2,7 @@
   // Worker realtime per HEXplorer. Stato per-sessione in un Durable Object
   // (HexSession) con storage SQLite → idoneo al piano gratuito.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tristora-hexcrawl-worker",
+  "name": "hexjournay-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
   "observability": { "enabled": true },
