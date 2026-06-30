@@ -1,8 +1,10 @@
+import { useLayoutEffect, useRef, useState } from 'react'
 import { OVERLAYS, TERRAINS, getTileDef, type TileDef } from '@/data/catalog'
 import { DEFAULT_SCALE, SCALES, VEHICLES, formatDistance, formatTravel, scaleOf } from '@/data/travel'
 import { useMapStore, type EffectKind } from '@/store/mapStore'
 import { useT } from '@/i18n/useT'
 import type { FogState, MapScale, Vehicle } from '@/model/types'
+import type { Device } from './useDevice'
 import Legend from './Legend'
 
 const HOURS_OPTIONS = Array.from({ length: 30 - 6 + 1 }, (_, i) => i + 6) // 6..30
@@ -16,8 +18,51 @@ const FOG_OPTIONS: { state: FogState; key: string; color: string }[] = [
 const LAND_OVERLAYS = OVERLAYS.filter((o) => o.on === 'land' || o.on === 'both')
 const WATER_OVERLAYS = OVERLAYS.filter((o) => o.on === 'water' || o.on === 'both')
 
-export default function Palette() {
+// Vincoli di larghezza della barra laterale e costanti di layout degli swatch
+// (devono restare allineate al CSS: gap della griglia + padding orizzontale).
+const SIDEBAR_MIN = 224
+const SIDEBAR_MAX = 480
+const SIDEBAR_GRID_GAP = 8
+const SIDEBAR_PADDING_X = 24
+
+/** Larghezza (px) per contenere senza tagli una griglia di swatch a 2 colonne
+ * con le `labels` date. Misura il vero layout di uno swatch fuori schermo, così
+ * tiene conto di colore, gap, padding e bordo reali. */
+function fitSidebarWidth(labels: string[]): number {
+  const probe = document.createElement('div')
+  probe.className = 'swatch'
+  probe.style.cssText =
+    'position:absolute;visibility:hidden;left:-9999px;top:0;width:auto;white-space:nowrap'
+  const color = document.createElement('span')
+  color.className = 'swatch-color'
+  const name = document.createElement('span')
+  name.className = 'swatch-name'
+  // forza la larghezza piena del testo (niente ellissi durante la misura)
+  name.style.cssText = 'overflow:visible;text-overflow:clip;white-space:nowrap'
+  probe.append(color, name)
+  document.body.appendChild(probe)
+  let maxSwatch = 0
+  for (const l of labels) {
+    name.textContent = l
+    if (probe.offsetWidth > maxSwatch) maxSwatch = probe.offsetWidth
+  }
+  document.body.removeChild(probe)
+  const w = Math.round(2 * maxSwatch + SIDEBAR_GRID_GAP + SIDEBAR_PADDING_X)
+  return Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, w))
+}
+
+export default function Palette({
+  device = 'desktop',
+  drawerOpen = false,
+  onCloseDrawer,
+}: {
+  device?: Device
+  /** stato del cassetto a scomparsa (solo mobile) */
+  drawerOpen?: boolean
+  onCloseDrawer?: () => void
+} = {}) {
   const t = useT()
+  const lang = useMapStore((s) => s.lang)
   const mode = useMapStore((s) => s.mode)
   const tool = useMapStore((s) => s.tool)
   const brushKind = useMapStore((s) => s.brushKind)
@@ -50,6 +95,100 @@ export default function Palette() {
   const vehicle = useMapStore((s) => s.doc?.vehicle ?? 'foot')
   const setVehicle = useMapStore((s) => s.setVehicle)
   const distanceUnit = useMapStore((s) => s.distanceUnit)
+
+  // --- Larghezza adattiva + ridimensionamento orizzontale della barra ---
+  const sidebarRef = useRef<HTMLElement>(null)
+  const [sidebarWidth, setSidebarWidth] = useState<number | null>(null)
+  const drag = useRef<{ startX: number; startW: number } | null>(null)
+
+  const measureWidth = () =>
+    fitSidebarWidth([
+      ...TERRAINS.map((td) => t(`terrain.${td.id}`)),
+      ...OVERLAYS.map((o) => t(`overlay.${o.id}`)),
+      ...FOG_OPTIONS.map((f) => t(f.key)),
+      t('players.move'),
+      t('palette.remove'),
+    ])
+
+  // All'avvio e a ogni cambio lingua: adatta la larghezza per mostrare tutto il
+  // contenuto (padding incluso) senza troncamenti.
+  useLayoutEffect(() => {
+    setSidebarWidth(measureWidth())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang])
+
+  const onResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    drag.current = { startX: e.clientX, startW: sidebarRef.current?.offsetWidth ?? SIDEBAR_MIN }
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* pointerId non catturabile (es. evento sintetico): si procede comunque */
+    }
+  }
+  const onResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = drag.current
+    if (!d) return
+    const max = Math.min(SIDEBAR_MAX, Math.round(window.innerWidth * 0.5))
+    const next = Math.max(SIDEBAR_MIN, Math.min(max, d.startW + (e.clientX - d.startX)))
+    setSidebarWidth(next)
+  }
+  const onResizeEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    drag.current = null
+    try {
+      e.currentTarget.releasePointerCapture?.(e.pointerId)
+    } catch {
+      /* nessuna cattura attiva da rilasciare */
+    }
+  }
+
+  // Su mobile la palette è un cassetto a scomparsa; chiuderlo dopo aver scelto
+  // uno strumento libera la vista sulla mappa.
+  const isDrawer = device === 'mobile'
+  const closeDrawer = () => {
+    if (isDrawer) onCloseDrawer?.()
+  }
+
+  /** Avvolge il contenuto nella barra laterale con scroll interno. Su desktop/
+   * tablet è in linea con maniglia di ridimensionamento; su mobile è un cassetto
+   * a scomparsa con backdrop e pulsante di chiusura. */
+  const renderSidebar = (content: React.ReactNode) => (
+    <>
+      {isDrawer && drawerOpen && <div className="drawer-backdrop" onClick={onCloseDrawer} />}
+      <aside
+        ref={sidebarRef}
+        className={`sidebar${isDrawer ? ' drawer' : ''}${isDrawer && drawerOpen ? ' open' : ''}`}
+        style={!isDrawer && sidebarWidth != null ? { width: sidebarWidth } : undefined}
+        aria-hidden={isDrawer && !drawerOpen ? true : undefined}
+      >
+        {isDrawer && (
+          <div className="drawer-header">
+            <button
+              className="btn ghost drawer-close"
+              onClick={onCloseDrawer}
+              aria-label={t('common.close')}
+              title={t('common.close')}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        <div className="sidebar-scroll">{content}</div>
+        {!isDrawer && (
+          <div
+            className="sidebar-resize"
+            role="separator"
+            aria-orientation="vertical"
+            title={t('palette.resizeHandle')}
+            onPointerDown={onResizeDown}
+            onPointerMove={onResizeMove}
+            onPointerUp={onResizeEnd}
+            onPointerCancel={onResizeEnd}
+            onDoubleClick={() => setSidebarWidth(measureWidth())}
+          />
+        )}
+      </aside>
+    </>
+  )
 
   const travelText =
     travelDays == null
@@ -84,8 +223,8 @@ export default function Palette() {
 
   // --- Modalità Giocatore: sola lettura + viaggio + leggenda ---
   if (mode !== 'gm') {
-    return (
-      <aside className="sidebar">
+    return renderSidebar(
+      <>
         {nameHeader}
         <div className="panel-section">
           <div className="panel-title">{t('role.player')}</div>
@@ -113,7 +252,7 @@ export default function Palette() {
         </div>
 
         <Legend />
-      </aside>
+      </>,
     )
   }
 
@@ -127,7 +266,10 @@ export default function Palette() {
         <button
           key={o.id}
           className={'swatch' + (brushKind === 'effect' && selectedEffect === eff ? ' active' : '')}
-          onClick={() => setEffectTool(eff)}
+          onClick={() => {
+            setEffectTool(eff)
+            closeDrawer()
+          }}
           title={t(`overlay.${o.id}`)}
         >
           <span className="swatch-color" style={{ background: o.color }} />
@@ -139,7 +281,10 @@ export default function Palette() {
       <button
         key={o.id}
         className={'swatch' + (overlayActive(o.id) ? ' active' : '')}
-        onClick={() => setSelectedOverlay(o.id)}
+        onClick={() => {
+          setSelectedOverlay(o.id)
+          closeDrawer()
+        }}
         title={t(`overlay.${o.id}`)}
       >
         <span className="swatch-color" style={{ background: o.color }} />
@@ -147,6 +292,23 @@ export default function Palette() {
       </button>
     )
   }
+
+  // Swatch "Rimuovi" (overlay vuoto): azzera overlay ed effetti dell'hex.
+  // Presente sia tra gli overlay di terra sia tra quelli d'acqua.
+  const removeSwatch = () => (
+    <button
+      key="__remove"
+      className={'swatch' + (overlayActive('') ? ' active' : '')}
+      onClick={() => {
+        setSelectedOverlay('')
+        closeDrawer()
+      }}
+      title={t('palette.remove.title')}
+    >
+      <span className="swatch-color swatch-erase">✕</span>
+      <span className="swatch-name">{t('palette.remove')}</span>
+    </button>
+  )
 
   // --- PENNELLO: scala + terreni + overlay ---
   const brushSections = (
@@ -171,7 +333,10 @@ export default function Palette() {
             <button
               key={td.id}
               className={'swatch' + (terrainActive(td.id) ? ' active' : '')}
-              onClick={() => setSelectedTerrain(td.id)}
+              onClick={() => {
+                setSelectedTerrain(td.id)
+                closeDrawer()
+              }}
               title={t(`terrain.${td.id}`)}
             >
               <span className="swatch-color" style={{ background: td.color }} />
@@ -185,14 +350,7 @@ export default function Palette() {
         <div className="panel-title">{t('legend.overlaysLand')}</div>
         <div className="swatch-grid">
           {LAND_OVERLAYS.map(overlaySwatch)}
-          <button
-            className={'swatch' + (overlayActive('') ? ' active' : '')}
-            onClick={() => setSelectedOverlay('')}
-            title={t('palette.remove.title')}
-          >
-            <span className="swatch-color swatch-erase">✕</span>
-            <span className="swatch-name">{t('palette.remove')}</span>
-          </button>
+          {removeSwatch()}
         </div>
 
         {brushKind === 'overlay' &&
@@ -204,7 +362,10 @@ export default function Palette() {
 
       <div className="panel-section">
         <div className="panel-title">{t('legend.overlaysWater')}</div>
-        <div className="swatch-grid">{WATER_OVERLAYS.map(overlaySwatch)}</div>
+        <div className="swatch-grid">
+          {WATER_OVERLAYS.map(overlaySwatch)}
+          {removeSwatch()}
+        </div>
       </div>
     </>
   )
@@ -262,7 +423,10 @@ export default function Palette() {
             <button
               key={f.state}
               className={'swatch' + (brushKind === 'fog' && fogBrush === f.state ? ' active' : '')}
-              onClick={() => setFogBrush(f.state)}
+              onClick={() => {
+                setFogBrush(f.state)
+                closeDrawer()
+              }}
               title={t('fog.brushTitle', { label: t(f.key) })}
             >
               <span className="swatch-color" style={{ background: f.color }} />
@@ -284,7 +448,10 @@ export default function Palette() {
         <div className="panel-title">{t('players.title')}</div>
         <button
           className={'swatch full' + (brushKind === 'players' ? ' active' : '')}
-          onClick={setPlayerTool}
+          onClick={() => {
+            setPlayerTool()
+            closeDrawer()
+          }}
           title={t('players.move.title')}
         >
           <span className="swatch-color" style={{ background: '#3a9bdc' }} />
@@ -326,12 +493,12 @@ export default function Palette() {
     </>
   )
 
-  return (
-    <aside className="sidebar">
+  return renderSidebar(
+    <>
       {nameHeader}
       {tool === 'brush' && brushSections}
       {tool === 'explore' && exploreSections}
       {tool === 'pan' && <Legend />}
-    </aside>
+    </>,
   )
 }

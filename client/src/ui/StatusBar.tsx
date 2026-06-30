@@ -23,7 +23,10 @@ export default function StatusBar() {
             {t('status.mode', { mode: mode === 'gm' ? t('role.dm') : t('role.player') })}
           </span>
           <span className="status-spacer" />
-          <span className="status-item mono">
+          <span className={`status-item status-coord mono${hovered ? ' active' : ''}`}>
+            <span className="coord-glyph" aria-hidden="true">
+              ⬡
+            </span>
             {hovered ? t('status.hex', { q: hovered.q, r: hovered.r }) : t('status.hexNone')}
           </span>
         </>

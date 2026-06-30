@@ -6,6 +6,7 @@ import {
   type NewMapOptions,
 } from '@/store/mapStore'
 import { useT } from '@/i18n/useT'
+import { TERRAINS } from '@/data/catalog'
 import type { MapShape, Orientation } from '@/model/types'
 
 export default function NewMapDialog({ onClose }: { onClose: () => void }) {
@@ -16,6 +17,7 @@ export default function NewMapDialog({ onClose }: { onClose: () => void }) {
   const [height, setHeight] = useState(15)
   const [orientation, setOrientation] = useState<Orientation>('pointy')
   const [shape, setShape] = useState<MapShape>('rectangular')
+  const [baseTerrain, setBaseTerrain] = useState('')
   const [playersAtCenter, setPlayersAtCenter] = useState(true)
 
   const clampDim = (v: number) => Math.max(MIN_DIM, Math.min(MAX_DIM, Math.round(v || 0)))
@@ -25,7 +27,15 @@ export default function NewMapDialog({ onClose }: { onClose: () => void }) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!valid) return
-    const opts: NewMapOptions = { name, width, height, orientation, shape, playersAtCenter }
+    const opts: NewMapOptions = {
+      name,
+      width,
+      height,
+      orientation,
+      shape,
+      playersAtCenter,
+      baseTerrain,
+    }
     createMap(opts)
     onClose()
   }
@@ -82,6 +92,18 @@ export default function NewMapDialog({ onClose }: { onClose: () => void }) {
             </select>
           </label>
         </div>
+
+        <label className="field">
+          <span>{t('newMap.baseTerrain')}</span>
+          <select value={baseTerrain} onChange={(e) => setBaseTerrain(e.target.value)}>
+            <option value="">{t('newMap.baseEmpty')}</option>
+            {TERRAINS.map((td) => (
+              <option key={td.id} value={td.id}>
+                {t(`terrain.${td.id}`)}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <label className="check-row">
           <input

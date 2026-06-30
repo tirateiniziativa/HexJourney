@@ -1,166 +1,167 @@
 # MIGRATION.md — HexJourney → Cloudflare (Pages + Workers + Durable Objects)
 
-Nota tecnica interna alla migrazione. Obiettivo: deploy gratuito/semplice su
-Cloudflare **mantenendo tutte le funzionalità esistenti**, migrando in modo
-incrementale e senza riscrivere l'app.
+Internal technical note for the migration. Goal: a free/simple deploy on Cloudflare
+**keeping all existing functionality**, migrating incrementally and without
+rewriting the app.
 
-## 1. Architettura attuale
+## 1. Current architecture
 
 **Frontend (root, Vite SPA)**
-- Root del repo = app Vite + React 19 + TS 5.6 + PixiJS 8 + zustand 5 + dexie 4.
-- `src/`: `model/` (tipi), `hex/` (coordinate/layout/los/pathfind), `store/`
+- Repo root = Vite + React 19 + TS 5.6 + PixiJS 8 + zustand 5 + dexie 4 app.
+- `src/`: `model/` (types), `hex/` (coordinates/layout/los/pathfind), `store/`
   (zustand `mapStore`), `render/` (PixiManager/HexCanvas), `ui/`, `i18n/`,
   `persistence/` (Dexie + io), `data/` (catalog/travel), `sync/` (realtime client).
 - Alias `@` → `src` (vite.config + tsconfig.app). Build: `tsc -b && vite build`.
-- Connessione realtime: `src/sync/SyncClient.ts` apre **un unico** WebSocket a
-  `DEFAULT_WS_URL` (`VITE_WS_URL` o `ws://localhost:8787/ws`). `bridge.ts`
-  (singleton + emit helpers chiamati dallo store), `useSync.ts` (instrada i
-  messaggi server → store).
+- Realtime connection: `src/sync/SyncClient.ts` opens **a single** WebSocket to
+  `DEFAULT_WS_URL` (`VITE_WS_URL` or `ws://localhost:8787/ws`). `bridge.ts`
+  (singleton + emit helpers called by the store), `useSync.ts` (routes server
+  messages → store).
 
 **Backend (`server/`, Node + Fastify 5 + ws 8)**
-- `server/src/index.ts`: Fastify (`GET /health`) + `WebSocketServer` su `/ws`.
-  Instrada i messaggi in base al `sessionId` **dentro** il messaggio.
-- `server/src/sessions.ts`: `SessionManager` in memoria — `Map<sessionId,
-  Session{ id, map, clients: Map<clientId, Client> }>`. Genera codici a 6 char,
+- `server/src/index.ts`: Fastify (`GET /health`) + `WebSocketServer` on `/ws`.
+  Routes messages based on the `sessionId` **inside** the message.
+- `server/src/sessions.ts`: in-memory `SessionManager` — `Map<sessionId,
+  Session{ id, map, clients: Map<clientId, Client> }>`. Generates 6-char codes,
   `createSession/getSession/addClient/removeClient/presence/applyPatch/applyFog/
   applyFullState/broadcast/send`.
-- `server/src/protocol.ts` + `server/src/model.ts`: protocollo e tipi
-  **duplicati** rispetto al client, con validatori `isFogState/isHexTile/
-  isMapDocument`.
+- `server/src/protocol.ts` + `server/src/model.ts`: protocol and types
+  **duplicated** with respect to the client, with `isFogState/isHexTile/
+  isMapDocument` validators.
 
-**Modello dati** — `src/model/types.ts` (fonte) con copia parziale in
+**Data model** — `src/model/types.ts` (source) with a partial copy in
 `server/src/model.ts`. `MapDocument`, `HexTile`, `FogState`, `Orientation`,
-`HexPath`, `ExplorationDocument`, ecc.
+`HexPath`, `ExplorationDocument`, etc.
 
-**Protocollo realtime attuale**
-- Client→Server: `create {map}` (il GM crea, **il server genera il codice**),
+**Current realtime protocol**
+- Client→Server: `create {map}` (the DM creates, **the server generates the code**),
   `join {sessionId, role}`, `patch`, `fogUpdate`, `fullState`, `requestFullState`.
 - Server→Client: `welcome {sessionId, role, clientId}`, `fullState`, `patch`,
   `fogUpdate`, `presence`, `error`.
-- **Autorità**: il server applica `patch/fogUpdate/fullState` solo se
-  `client.role === 'gm'`; i messaggi dei player sono ignorati. Riconnessione:
-  il client ricorda `sessionId` e al riaprire invia `join` + `requestFullState`.
+- **Authority**: the server applies `patch/fogUpdate/fullState` only if
+  `client.role === 'gm'`; player messages are ignored. Reconnection: the client
+  remembers `sessionId` and on reopening sends `join` + `requestFullState`.
 
-## 2. Architettura target (Cloudflare)
+## 2. Target architecture (Cloudflare)
 
 ```
 /
-├── client/   SPA Vite/React (deploy su Cloudflare Pages, output dist/)
+├── client/   Vite/React SPA (deployed to Cloudflare Pages, output dist/)
 ├── worker/   Cloudflare Worker (router) + Durable Object HexSession (Wrangler)
-├── shared/   tipi + protocollo + hex condivisi (model/ protocol/ hex/)
-├── package.json (workspaces, script root)
+├── shared/   shared types + protocol + hex (model/ protocol/ hex/)
+├── package.json (workspaces, root scripts)
 ├── tsconfig.base.json
 └── README.md
 ```
 
-- **shared/** = unica fonte di tipi/protocollo, pacchetto workspace
-  `@hexjourney/shared` risolto via node_modules (Vite, Wrangler/esbuild e tsc lo
-  risolvono nativamente, senza path-alias per-tool).
-- **worker/index.ts**: solo routing HTTP. `GET /health` → `{ ok: true }`;
-  `GET /session/:id/websocket` → upgrade WS verso il **Durable Object**
-  `HEX_SESSIONS.idFromName(sessionId)`; `POST /session` → genera un id casuale.
-  Non tiene stato della mappa.
-- **worker/HexSession.ts**: Durable Object autoritativo per-sessione. Tiene il
-  `MapDocument` in `ctx.storage`, la lista connessioni, i ruoli; usa la
+- **shared/** = single source of types/protocol, workspace package
+  `@hexjourney/shared` resolved via node_modules (Vite, Wrangler/esbuild and tsc
+  resolve it natively, without per-tool path aliases).
+- **worker/index.ts**: HTTP routing only. `GET /health` → `{ ok: true }`;
+  `GET /session/:id/websocket` → WS upgrade to the **Durable Object**
+  `HEX_SESSIONS.idFromName(sessionId)`; `POST /session` → generates a random id.
+  It holds no map state.
+- **worker/HexSession.ts**: per-session authoritative Durable Object. Holds the
+  `MapDocument` in `ctx.storage`, the connection list, the roles; uses the
   **WebSocket Hibernation API** (`ctx.acceptWebSocket`, `webSocketMessage`,
-  `webSocketClose`, `serializeAttachment` per ruolo/nome). Invia `fullState`
-  all'ingresso + `presence`, applica `patch/fogUpdate` **solo dal GM**, fa
-  broadcast, risponde a `requestFullState`.
+  `webSocketClose`, `serializeAttachment` for role/name). Sends `fullState` on
+  entry + `presence`, applies `patch/fogUpdate` **only from the DM**, broadcasts,
+  responds to `requestFullState`.
 
-**Protocollo target** (discriminato per `type`, in `shared/protocol`)
-- Client→Server: `join {sessionId, role, name?, map?}` (il GM crea/inizializza
-  fornendo `map`; non c'è più `create`), `patch`, `fogUpdate`, `requestFullState`.
+**Target protocol** (discriminated by `type`, in `shared/protocol`)
+- Client→Server: `join {sessionId, role, name?, map?}` (the DM creates/initializes
+  by providing `map`; there is no more `create`), `patch`, `fogUpdate`,
+  `requestFullState`.
 - Server→Client: `fullState`, `patch`, `fogUpdate`, `presence`, `error`.
-  (Il `welcome` sparisce: il client conosce già il proprio ruolo perché lo sceglie
-  alla connessione; il `sessionId` è nell'URL.)
+  (The `welcome` goes away: the client already knows its own role because it picks
+  it at connection time; the `sessionId` is in the URL.)
 
-## 3. Punti da migrare
+## 3. Points to migrate
 
-1. **shared/**: estrarre `model` + `protocol` (discriminato `type`) + eventuale
-   `hex`, eliminando la duplicazione client/server. Rewire del frontend per
-   importare da `@hexjourney/shared`.
-2. **Protocollo**: `create {map}` → `join {sessionId, role, map?}`; rimuovere
-   `welcome` (ruolo/sessione noti lato client/URL).
-3. **Routing per-sessione**: dal singolo `/ws` con sessionId nel messaggio →
-   `/session/:id/websocket` con sessionId nel **path** (Worker → DO per id).
-4. **Durable Object** `HexSession` con Hibernation API + `ctx.storage` per la
-   persistenza del `MapDocument`.
-5. **Validazione** dei messaggi nel worker (porting di `isFogState/isHexTile/
-   isMapDocument` + controllo `type`, `role`, `tileKey "q,r"`).
-6. **Client `sync/`**: URL per-sessione (`VITE_WORKER_*`), `connectToSession({
-   sessionId, role, name, map? })`, gestione ruolo lato client.
-7. **UI sessione**: il GM sceglie/genera il `sessionId` (POST /session o random
-   client-side) e invia la `MapDocument`; link player `/?session=…&role=player`.
-8. **Monorepo**: spostare il frontend in `client/`, creare `worker/` e `shared/`,
-   workspaces + script root; **rimuovere** `server/` (Fastify/ws).
+1. **shared/**: extract `model` + `protocol` (discriminated `type`) + the optional
+   `hex`, eliminating the client/server duplication. Rewire the frontend to import
+   from `@hexjourney/shared`.
+2. **Protocol**: `create {map}` → `join {sessionId, role, map?}`; remove `welcome`
+   (role/session known client-side/URL).
+3. **Per-session routing**: from the single `/ws` with the sessionId in the message
+   → `/session/:id/websocket` with the sessionId in the **path** (Worker → DO by id).
+4. **Durable Object** `HexSession` with the Hibernation API + `ctx.storage` for the
+   persistence of the `MapDocument`.
+5. **Validation** of the messages in the worker (porting of `isFogState/isHexTile/
+   isMapDocument` + check of `type`, `role`, `tileKey "q,r"`).
+6. **Client `sync/`**: per-session URL (`VITE_WORKER_*`), `connectToSession({
+   sessionId, role, name, map? })`, client-side role handling.
+7. **Session UI**: the DM picks/generates the `sessionId` (POST /session or
+   client-side random) and sends the `MapDocument`; player link
+   `/?session=…&role=player`.
+8. **Monorepo**: move the frontend to `client/`, create `worker/` and `shared/`,
+   workspaces + root scripts; **remove** `server/` (Fastify/ws).
 
-## 4. Rischi principali
+## 4. Main risks
 
-- **Hibernation API**: semantica diversa dal modello `ws` (handler
-  `webSocketMessage/Close`, niente listener per-socket, attachment serializzati
-  per ruolo/nome). Da testare con `wrangler dev` (miniflare).
-- **Risoluzione `shared/`** tra Vite + Wrangler/esbuild + tsc: mitigata usando un
-  pacchetto workspace `@hexjourney/shared` (risoluzione node, niente path-alias
-  per-tool). esbuild bundla il TS del pacchetto.
-- **Spostamento del frontend in `client/`**: alias `@`, `index.html`, asset
-  `public/`, tsconfig e node_modules/workspaces da riallineare senza rompere il
-  build.
-- **Cambi di protocollo** (`create`→`join+map`, `welcome` rimosso): toccano client
-  e DO insieme; vanno migrati in coppia.
-- **Persistenza DO**: `ctx.storage` al posto della `Map` in memoria; il
-  `MapDocument` può essere grande (100×100) → attenzione a dimensioni/serializzazione.
-- **Test/deploy**: il realtime locale richiede `wrangler dev`; il deploy reale
-  richiede account Cloudflare (`wrangler login`) per Pages + Workers — non
-  verificabile in CI/sandbox, solo i typecheck/build lo sono.
+- **Hibernation API**: semantics different from the `ws` model (`webSocketMessage/
+  Close` handlers, no per-socket listeners, attachments serialized for role/name).
+  To be tested with `wrangler dev` (miniflare).
+- **`shared/` resolution** across Vite + Wrangler/esbuild + tsc: mitigated by using
+  a `@hexjourney/shared` workspace package (node resolution, no per-tool path
+  aliases). esbuild bundles the package's TS.
+- **Moving the frontend to `client/`**: the `@` alias, `index.html`, `public/`
+  assets, tsconfig and node_modules/workspaces to realign without breaking the build.
+- **Protocol changes** (`create`→`join+map`, `welcome` removed): they touch the
+  client and the DO together; they must be migrated as a pair.
+- **DO persistence**: `ctx.storage` instead of the in-memory `Map`; the
+  `MapDocument` can be large (100×100) → mind the size/serialization.
+- **Test/deploy**: local realtime requires `wrangler dev`; the real deploy requires
+  a Cloudflare account (`wrangler login`) for Pages + Workers — not verifiable in
+  CI/sandbox, only the typechecks/builds are.
 
-## 5. Stato della migrazione (avanzamento per fase)
+## 5. Migration status (progress by phase)
 
-- [x] **Fase 1** — Analisi + questa nota.
-- [x] **Fase 2** — `shared/` (`@hexjourney/shared`: model + protocol discriminato) e
-  rewire del frontend (`client/src/model/types.ts` ri-esporta da shared).
-- [x] **Fase 3** — Monorepo riorganizzato: frontend → `client/`, workspaces npm
-  (`client`/`shared`/`worker`), `tsconfig.base.json`, script root. `build:client`
-  e runtime verificati. `worker/` è ancora uno scheletro (Fasi 4–6).
-- [x] **Fase 4** — Worker router (`/health`, `POST /session`, `/session/:id/websocket`)
-  + `wrangler.jsonc` (DO binding `HEX_SESSIONS`, `new_sqlite_classes` → piano gratuito).
-- [x] **Fase 5** — Durable Object `HexSession` (WebSocket **Hibernation API**:
-  `acceptWebSocket`/`webSocketMessage`/`webSocketClose` + `serializeAttachment` per
-  ruolo/nome/id; mappa in `ctx.storage` SQLite + cache in memoria; autorità GM).
-- [x] **Fase 6** — Validazione messaggi (`worker/src/validation.ts` + validatori in
-  `shared/model`). Verificato: typecheck worker, `wrangler deploy --dry-run` (binding
-  OK), boot locale `wrangler dev` (`/health` → `{ok:true}`, `POST /session` → codice).
-- [x] **Fase 7** — Client `sync/` riscritto: URL per-sessione, `createSession`
-  (POST /session → connect GM con `map`), `joinSession`, niente `welcome`
-  (handler `onSession`). Config `VITE_WORKER_WS_URL` + `client/.env.example`.
-- [x] **Fase 8** — UI sessione: codice + **link giocatore** (`?session=…&role=player`),
-  prefill del codice dalla query string e apertura automatica del pannello.
-  Verificato con `wrangler dev` + client: `fullState`, broadcast patch GM→player,
-  **patch player rifiutata** (autorità), `presence`, e `POST /session` CORS.
-- [x] **Fase 9** — Rimosso `server/` (Fastify/ws). Nessuno script root rotto (gli
-  script `server*` erano già stati tolti). `ws` resta nel lockfile solo come
-  dipendenza transitiva di Wrangler.
-- [x] **Fase 10–11** — Documentati i deploy (README §4): Pages (root `client/`,
-  output `dist/`, env `VITE_WORKER_WS_URL=wss://<worker-domain>`) e Worker
-  (`wrangler login` + `npm run deploy:worker`). Il deploy effettivo richiede
-  l'account Cloudflare dell'utente.
-- [x] **Fase 12** — README riscritto (architettura, sviluppo, build, deploy, test
-  sessione, export/import, note tecniche). `CLAUDE.md` aggiornato.
-- [x] **Fase 13** — Verifiche: `npm install` (workspaces), `npm run typecheck`
-  (client+worker), `npm run build:client`, `wrangler --dry-run` (binding DO), e
-  test realtime locale (fullState/broadcast/autorità/presence, CORS `POST /session`).
+- [x] **Phase 1** — Analysis + this note.
+- [x] **Phase 2** — `shared/` (`@hexjourney/shared`: model + discriminated protocol)
+  and frontend rewire (`client/src/model/types.ts` re-exports from shared).
+- [x] **Phase 3** — Monorepo reorganized: frontend → `client/`, npm workspaces
+  (`client`/`shared`/`worker`), `tsconfig.base.json`, root scripts. `build:client`
+  and runtime verified. `worker/` is still a skeleton (Phases 4–6).
+- [x] **Phase 4** — Worker router (`/health`, `POST /session`, `/session/:id/websocket`)
+  + `wrangler.jsonc` (DO binding `HEX_SESSIONS`, `new_sqlite_classes` → free plan).
+- [x] **Phase 5** — Durable Object `HexSession` (WebSocket **Hibernation API**:
+  `acceptWebSocket`/`webSocketMessage`/`webSocketClose` + `serializeAttachment` for
+  role/name/id; map in `ctx.storage` SQLite + in-memory cache; DM authority).
+- [x] **Phase 6** — Message validation (`worker/src/validation.ts` + validators in
+  `shared/model`). Verified: worker typecheck, `wrangler deploy --dry-run` (binding
+  OK), local boot `wrangler dev` (`/health` → `{ok:true}`, `POST /session` → code).
+- [x] **Phase 7** — Client `sync/` rewritten: per-session URL, `createSession`
+  (POST /session → connect DM with `map`), `joinSession`, no `welcome` (`onSession`
+  handler). Config `VITE_WORKER_WS_URL` + `client/.env.example`.
+- [x] **Phase 8** — Session UI: code + **player link** (`?session=…&role=player`),
+  prefill of the code from the query string and automatic opening of the panel.
+  Verified with `wrangler dev` + client: `fullState`, DM→player patch broadcast,
+  **player patch rejected** (authority), `presence`, and `POST /session` CORS.
+- [x] **Phase 9** — Removed `server/` (Fastify/ws). No broken root script (the
+  `server*` scripts had already been removed). `ws` stays in the lockfile only as a
+  transitive dependency of Wrangler.
+- [x] **Phase 10–11** — Documented the deploys (README §4): Pages (root `client/`,
+  output `dist/`, env `VITE_WORKER_WS_URL=wss://<worker-domain>`) and Worker
+  (`wrangler login` + `npm run deploy:worker`). The actual deploy requires the
+  user's Cloudflare account.
+- [x] **Phase 12** — README rewritten (architecture, development, build, deploy,
+  session test, export/import, technical notes). `CLAUDE.md` updated.
+- [x] **Phase 13** — Checks: `npm install` (workspaces), `npm run typecheck`
+  (client+worker), `npm run build:client`, `wrangler --dry-run` (DO binding), and
+  local realtime test (fullState/broadcast/authority/presence, CORS `POST /session`).
 
-## 6. Criteri di accettazione — stato
+## 6. Acceptance criteria — status
 
-- [x] Compila senza errori TypeScript (typecheck client + worker verdi).
-- [x] Frontend deployabile su Cloudflare Pages (build `client/dist`).
-- [x] Backend deployabile su Cloudflare Workers (dry-run OK; deploy con account).
-- [x] Nessuna dipendenza runtime dal vecchio server Fastify/ws (rimosso).
-- [x] Sessioni realtime via Durable Object (testate in locale).
-- [x] DM autoritativo; player sola lettura (patch player rifiutata).
-- [x] Stato mappa/fog persistente nel DO durante la sessione e oltre il riavvio
+- [x] Compiles without TypeScript errors (client + worker typecheck green).
+- [x] Frontend deployable to Cloudflare Pages (build `client/dist`).
+- [x] Backend deployable to Cloudflare Workers (dry-run OK; deploy with an account).
+- [x] No runtime dependency on the old Fastify/ws server (removed).
+- [x] Realtime sessions via Durable Object (tested locally).
+- [x] DM authoritative; players read-only (player patch rejected).
+- [x] Map/fog state persistent in the DO during the session and beyond a restart
   (`ctx.storage` SQLite).
-- [x] README sufficiente per partire da zero.
+- [x] README sufficient to start from scratch.
 
-> Limiti noti: deploy reale su Cloudflare da fare con l'account dell'utente
-> (`wrangler login`); mappa salvata come valore unico nel DO (~2 MiB, ok ~100×100,
-> split per-tile come TODO per mappe enormi).
+> Known limits: the real deploy to Cloudflare is to be done with the user's account
+> (`wrangler login`); the map is stored as a single value in the DO (~2 MiB, fine
+> for ~100×100, per-tile splitting as a TODO for huge maps).

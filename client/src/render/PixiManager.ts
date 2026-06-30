@@ -122,6 +122,10 @@ export class PixiManager {
   private painting = false
   private lastPaintKey: string | null = null
   private lastPointer = { x: 0, y: 0 }
+  // puntatori attivi (per il multi-touch): pointerId -> posizione locale
+  private activePointers = new Map<number, { x: number; y: number }>()
+  // stato del gesto pinch (2 dita): distanza e punto medio precedenti
+  private pinch: { dist: number; midX: number; midY: number } | null = null
   private cullScheduled = false
 
   /** Il canvas è un HTMLCanvasElement reale (renderer DOM/WebGL). */
@@ -1265,6 +1269,20 @@ export class PixiManager {
   private onPointerDown = (e: PointerEvent): void => {
     const p = this.localPoint(e)
     this.lastPointer = p
+    this.activePointers.set(e.pointerId, p)
+    try {
+      this.canvas.setPointerCapture?.(e.pointerId)
+    } catch {
+      /* pointerId non catturabile (es. evento sintetico): si procede comunque */
+    }
+    // Due dita: avvia il pinch (zoom + pan), annullando drag/pittura in corso.
+    if (this.activePointers.size >= 2) {
+      this.dragging = false
+      this.painting = false
+      this.lastPaintKey = null
+      this.syncPinchAnchor()
+      return
+    }
     // Sinistro: modalità ancore -> seleziona; pennello attivo -> dipinge;
     // altrimenti pan (sinistro col tool pan, o tasto destro/centrale sempre).
     if (e.button === 0 && this.callbacks.isAnchorMode?.()) {
@@ -1278,11 +1296,16 @@ export class PixiManager {
     } else {
       this.dragging = true
     }
-    this.canvas.setPointerCapture?.(e.pointerId)
   }
 
   private onPointerMove = (e: PointerEvent): void => {
     const p = this.localPoint(e)
+    if (this.activePointers.has(e.pointerId)) this.activePointers.set(e.pointerId, p)
+    // Pinch a due dita: zoom attorno al punto medio + pan col suo movimento.
+    if (this.pinch && this.activePointers.size >= 2) {
+      this.handlePinch()
+      return
+    }
     if (this.dragging) {
       this.world.x += p.x - this.lastPointer.x
       this.world.y += p.y - this.lastPointer.y
@@ -1295,10 +1318,64 @@ export class PixiManager {
   }
 
   private onPointerUp = (e: PointerEvent): void => {
-    this.dragging = false
-    this.painting = false
-    this.lastPaintKey = null
-    this.canvas.releasePointerCapture?.(e.pointerId)
+    this.endPointer(e.pointerId)
+    try {
+      this.canvas.releasePointerCapture?.(e.pointerId)
+    } catch {
+      /* nessuna cattura attiva da rilasciare */
+    }
+  }
+
+  private onPointerCancel = (e: PointerEvent): void => {
+    this.endPointer(e.pointerId)
+  }
+
+  /** Rimuove un puntatore e ripristina lo stato di gesto coerente. */
+  private endPointer(pointerId: number): void {
+    this.activePointers.delete(pointerId)
+    if (this.activePointers.size < 2) this.pinch = null
+    if (this.activePointers.size === 0) {
+      this.dragging = false
+      this.painting = false
+      this.lastPaintKey = null
+    } else if (this.activePointers.size === 1) {
+      // resta un dito dopo il pinch: niente pan/pittura finché non si rialza
+      this.dragging = false
+      this.painting = false
+      const [only] = this.activePointers.values()
+      if (only) this.lastPointer = only
+    }
+  }
+
+  /** Memorizza distanza e punto medio correnti tra le prime due dita. */
+  private syncPinchAnchor(): void {
+    const pts = [...this.activePointers.values()]
+    if (pts.length < 2) {
+      this.pinch = null
+      return
+    }
+    const [a, b] = pts
+    this.pinch = {
+      dist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+      midX: (a.x + b.x) / 2,
+      midY: (a.y + b.y) / 2,
+    }
+  }
+
+  /** Applica un passo di pinch: zoom proporzionale + pan del punto medio. */
+  private handlePinch(): void {
+    const prev = this.pinch
+    const pts = [...this.activePointers.values()]
+    if (!prev || pts.length < 2) return
+    const [a, b] = pts
+    const dist = Math.hypot(b.x - a.x, b.y - a.y) || 1
+    const midX = (a.x + b.x) / 2
+    const midY = (a.y + b.y) / 2
+    this.zoomAt(midX, midY, dist / prev.dist)
+    this.world.x += midX - prev.midX
+    this.world.y += midY - prev.midY
+    this.pinch = { dist, midX, midY }
+    this.scheduleCull()
   }
 
   private onPointerLeave = (): void => {
@@ -1364,6 +1441,7 @@ export class PixiManager {
     c.addEventListener('pointerdown', this.onPointerDown)
     c.addEventListener('pointermove', this.onPointerMove)
     c.addEventListener('pointerup', this.onPointerUp)
+    c.addEventListener('pointercancel', this.onPointerCancel)
     c.addEventListener('pointerleave', this.onPointerLeave)
     c.addEventListener('wheel', this.onWheel, { passive: false })
     c.addEventListener('contextmenu', (e) => e.preventDefault())
@@ -1375,6 +1453,7 @@ export class PixiManager {
     c.removeEventListener('pointerdown', this.onPointerDown)
     c.removeEventListener('pointermove', this.onPointerMove)
     c.removeEventListener('pointerup', this.onPointerUp)
+    c.removeEventListener('pointercancel', this.onPointerCancel)
     c.removeEventListener('pointerleave', this.onPointerLeave)
     c.removeEventListener('wheel', this.onWheel)
   }

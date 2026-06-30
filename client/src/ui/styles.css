@@ -21,13 +21,27 @@
 /* ---- Toolbar ---- */
 .toolbar {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
+  flex-direction: column; /* contenuto scrollabile + maniglia di resize */
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  position: relative; /* àncora per la maniglia .toolbar-resize */
   z-index: 5;
+}
+/* quando l'utente fissa un'altezza, il contenuto interno scorre */
+.toolbar.resized {
+  overflow: hidden;
+}
+.toolbar-inner {
+  display: flex;
+  align-items: center;
+  align-content: flex-start;
+  flex-wrap: wrap; /* va a capo se la lingua allunga le label: nessun taglio */
+  gap: 8px 12px; /* row-gap col-gap */
+  padding: 8px 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .toolbar-group {
   display: flex;
@@ -36,6 +50,32 @@
 }
 .toolbar-spacer {
   flex: 1 1 auto;
+}
+/* Maniglia di ridimensionamento (bordo inferiore). Trascina per regolare
+   l'altezza della barra, doppio clic per tornare all'altezza automatica. */
+.toolbar-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 7px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.toolbar-resize::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 40px;
+  height: 3px;
+  transform: translateX(-50%);
+  border-radius: 3px;
+  background: var(--border);
+  transition: background 0.12s;
+}
+.toolbar-resize:hover::after {
+  background: var(--primary);
 }
 .brand {
   font-weight: 700;
@@ -71,12 +111,46 @@
 
 /* ---- Sidebar / palette ---- */
 .sidebar {
-  width: 224px;
+  width: 224px; /* fallback prima della misura adattiva (vedi Palette.tsx) */
   flex: 0 0 auto;
   background: var(--panel);
   border-right: 1px solid var(--border);
+  position: relative; /* àncora per la maniglia .sidebar-resize */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* lo scroll è interno: la maniglia resta fissa al bordo */
+}
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
+}
+/* Maniglia di ridimensionamento orizzontale (bordo destro). Trascina per
+   regolare la larghezza, doppio clic per riadattarla al contenuto. */
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 7px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.sidebar-resize::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 1px;
+  width: 3px;
+  height: 40px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: var(--border);
+  transition: background 0.12s;
+}
+.sidebar-resize:hover::after {
+  background: var(--primary);
 }
 
 /* ---- Map name header (top of every sidebar) ---- */
@@ -370,6 +444,7 @@
 }
 .hex-canvas canvas {
   display: block;
+  touch-action: none; /* gestiamo noi pan/zoom touch (pinch) sul canvas */
 }
 
 .empty-state {
@@ -394,6 +469,13 @@
 .empty-card p {
   color: var(--muted);
   margin: 0 0 20px;
+}
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
 }
 .empty-card .credit {
   margin: 18px 0 0;
@@ -420,6 +502,27 @@
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* Lettura live delle coordinate dell'hex sotto il puntatore (navigazione). */
+.status-coord {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font-variant-numeric: tabular-nums;
+}
+.status-coord .coord-glyph {
+  color: var(--muted);
+}
+.status-coord.active {
+  border-color: var(--primary);
+  color: var(--text);
+}
+.status-coord.active .coord-glyph {
+  color: var(--accent);
 }
 
 /* ---- Buttons ---- */
@@ -598,4 +701,101 @@
   display: flex;
   gap: 6px;
   flex: 0 0 auto;
+}
+
+/* =========================================================================
+   Adattamento per dispositivo (profilo da useDevice: .device-mobile/tablet/
+   desktop). Niente sniffing dello user-agent: viewport + tipo di puntatore.
+   ========================================================================= */
+
+/* Pulsante per aprire la palette a scomparsa (visibile solo su mobile). */
+.palette-toggle {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+/* ---- Cassetto della palette (mobile) ---- */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 39;
+}
+.sidebar.drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(86vw, 360px);
+  z-index: 40;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.55);
+  transform: translateX(-100%);
+  transition: transform 0.22s ease;
+  will-change: transform;
+}
+.sidebar.drawer.open {
+  transform: translateX(0);
+}
+.drawer-header {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 8px 0;
+}
+.drawer-close {
+  padding: 6px 12px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* ---- Tablet: target touch più ampi, palette in linea ---- */
+.device-tablet .btn,
+.device-tablet .seg {
+  padding: 10px 16px;
+  font-size: 14px;
+}
+.device-tablet .swatch {
+  padding: 9px 10px;
+  font-size: 13px;
+}
+.device-tablet .swatch-color {
+  width: 20px;
+  height: 20px;
+}
+.device-tablet .lang-select,
+.device-tablet .field select,
+.device-tablet .field input,
+.device-tablet .manual-move input {
+  padding: 9px 12px;
+  font-size: 14px;
+}
+
+/* ---- Mobile: toolbar compatta scrollabile, status bar ridotta ---- */
+.device-mobile .toolbar-inner {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.device-mobile .toolbar-resize {
+  display: none;
+}
+.device-mobile .toolbar-social {
+  display: none;
+}
+.device-mobile .brand {
+  font-size: 14px;
+}
+.device-mobile .btn,
+.device-mobile .seg {
+  padding: 9px 13px;
+}
+.device-mobile .statusbar {
+  gap: 12px;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.device-mobile .empty-card {
+  padding: 24px 20px;
+  width: min(92vw, 420px);
 }

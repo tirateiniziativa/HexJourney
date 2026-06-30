@@ -59,6 +59,8 @@ export interface NewMapOptions {
   hexSize?: number
   /** se true, posiziona i giocatori al centro e applica la LoS iniziale */
   playersAtCenter?: boolean
+  /** terreno con cui inizializzare ogni casella (vuoto = casella non dipinta) */
+  baseTerrain?: string
 }
 
 export const DEFAULT_HEX_SIZE = 32
@@ -297,6 +299,16 @@ export const useMapStore = create<MapState>((set, get) => ({
         scale: DEFAULT_SCALE,
         vehicle: DEFAULT_VEHICLE,
       }
+      // Terreno di base: inizializza ogni casella della mappa al terreno scelto
+      // (es. "water" per una mappa marina). Vuoto = caselle non dipinte.
+      const base = o.baseTerrain ?? ''
+      if (base) {
+        const tiles: Record<string, HexTile> = {}
+        for (const { q, r } of mapCoords(doc)) {
+          tiles[keyOf(q, r)] = { ...DEFAULT_TILE, terrain: base }
+        }
+        doc.tiles = tiles
+      }
       if (o.playersAtCenter) {
         const center = centerHex(doc)
         if (center) {
@@ -304,8 +316,12 @@ export const useMapStore = create<MapState>((set, get) => ({
           doc.travelDays = 0 // posizione indicata per la prima volta
           doc.travelDistanceKm = 0
           const los = lineOfSight(doc, center)
-          const tiles: Record<string, HexTile> = {}
-          for (const k of los) tiles[k] = { ...DEFAULT_TILE, fog: 'visible' }
+          // mantiene il terreno di base, rivelando (fog visible) la LoS iniziale
+          const tiles: Record<string, HexTile> = { ...doc.tiles }
+          for (const k of los) {
+            const prev = tiles[k] ?? DEFAULT_TILE
+            tiles[k] = { ...prev, fog: 'visible' }
+          }
           doc.tiles = tiles
         }
       }
