@@ -17,6 +17,53 @@ export type MapScale = 'local' | 'regional' | 'kingdoms' | 'continents'
 /** Mezzo di trasporto degli avventurieri (determina tempi e percorribilità). */
 export type Vehicle = 'foot' | 'horse' | 'carriage' | 'caravan' | 'boat' | 'ship'
 
+/** Stagione della campagna: pilota le probabilità base del meteo. */
+export type Season = 'spring' | 'summer' | 'autumn' | 'winter'
+
+/** Tipi di meteo dinamico. */
+export type WeatherType =
+  | 'sunny'
+  | 'cloudy'
+  | 'rain'
+  | 'storm'
+  | 'snow'
+  | 'blizzard'
+  | 'fog'
+  | 'heatwave'
+  | 'sandstorm'
+  | 'ashfall'
+  | 'volcanicEruption'
+
+/** Stato meteo corrente della campagna. Vive nello stato di esplorazione (non
+ * nella geografia permanente): stagione + meteo attuale + inerzia (giorni
+ * consecutivi) + meteo precedente. */
+export interface WeatherState {
+  current: WeatherType
+  season: Season
+  /** giorni consecutivi con lo stesso `current` (>= 1) */
+  consecutiveDays: number
+  /** meteo del giorno precedente (per log/undo) */
+  previous?: WeatherType
+  /** contatore dei roll/avanzamenti (per debug/log) */
+  lastUpdatedTurn?: number
+}
+
+export const SEASONS: readonly Season[] = ['spring', 'summer', 'autumn', 'winter']
+
+export const WEATHER_TYPES: readonly WeatherType[] = [
+  'sunny',
+  'cloudy',
+  'rain',
+  'storm',
+  'snow',
+  'blizzard',
+  'fog',
+  'heatwave',
+  'sandstorm',
+  'ashfall',
+  'volcanicEruption',
+]
+
 /** Indice di un lato dell'esagono (0..5), in senso orario dai corner di honeycomb. */
 export type Edge = 0 | 1 | 2 | 3 | 4 | 5
 
@@ -78,6 +125,8 @@ export interface MapDocument {
   scale?: MapScale
   /** mezzo di trasporto attivo per l'esplorazione; default "foot" */
   vehicle?: Vehicle
+  /** stato meteo della campagna; default sunny/spring (vedi defaultWeatherState) */
+  weather?: WeatherState
 }
 
 /** I terreni d'acqua (no overlay di terra, percorribili solo da mezzi d'acqua). */
@@ -101,6 +150,8 @@ export interface ExplorationDocument {
   playerPos?: { q: number; r: number }
   travelDays?: number
   travelDistanceKm?: number
+  /** stato meteo (fa parte dello stato di esplorazione/campagna) */
+  weather?: WeatherState
 }
 
 export const EMPTY_TERRAIN = ''
@@ -173,6 +224,46 @@ export function isHexTile(v: unknown): v is HexTile {
     if (t[flag] !== undefined && typeof t[flag] !== 'boolean') return false
   }
   return true
+}
+
+// ---- Meteo: default, validatori e normalizzazione -------------------------
+
+const SEASON_SET: ReadonlySet<string> = new Set<Season>(SEASONS)
+const WEATHER_SET: ReadonlySet<string> = new Set<WeatherType>(WEATHER_TYPES)
+
+export function isWeatherType(v: unknown): v is WeatherType {
+  return typeof v === 'string' && WEATHER_SET.has(v)
+}
+
+export function isSeason(v: unknown): v is Season {
+  return typeof v === 'string' && SEASON_SET.has(v)
+}
+
+export function isWeatherState(v: unknown): v is WeatherState {
+  if (typeof v !== 'object' || v === null) return false
+  const w = v as Record<string, unknown>
+  return isWeatherType(w.current) && isSeason(w.season) && typeof w.consecutiveDays === 'number'
+}
+
+/** Stato meteo iniziale: ogni nuova mappa/sessione parte con sunny/spring. */
+export function defaultWeatherState(): WeatherState {
+  return { current: 'sunny', season: 'spring', consecutiveDays: 1, lastUpdatedTurn: 0 }
+}
+
+/** Ritorna sempre un WeatherState valido: normalizza input parziali e fornisce
+ * il default per le mappe salvate prima del meteo (retro-compatibilità). */
+export function ensureWeatherState(w: unknown): WeatherState {
+  if (isWeatherState(w)) {
+    const s = w as WeatherState
+    return {
+      current: s.current,
+      season: s.season,
+      consecutiveDays: Math.max(1, Math.floor(s.consecutiveDays) || 1),
+      previous: isWeatherType(s.previous) ? s.previous : undefined,
+      lastUpdatedTurn: typeof s.lastUpdatedTurn === 'number' ? s.lastUpdatedTurn : 0,
+    }
+  }
+  return defaultWeatherState()
 }
 
 /** Validazione minima e difensiva di un MapDocument in ingresso. */

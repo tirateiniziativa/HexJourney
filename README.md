@@ -167,11 +167,14 @@ also recommended (it currently points to `favicon.svg`).
 ## 6. Export / Import
 
 **Export/Import** button. All formats are JSON with `schemaVersion`.
-- **Full map** — the whole `MapDocument` (world + exploration).
-- **Clean map** — world with exploration reset (fog `hidden`, travel 0), players'
-  initial LoS re-applied.
-- **Exploration only** — `{ fog, playerPos, travelDays, travelDistanceKm }`.
+- **Full map** — the whole `MapDocument` (world + exploration + **weather**).
+- **Clean map** — world with exploration reset (fog `hidden`, travel 0, **weather
+  reset to sunny/spring**), players' initial LoS re-applied.
+- **Exploration only** — `{ fog, playerPos, travelDays, travelDistanceKm, weather }`.
 - **Image (.png)** — the whole map.
+
+The weather is part of the exploration/campaign state (it lives in
+`MapDocument.weather`), so it follows the same three export modes.
 
 Mirror import; for exploration-only it checks that the `mapId` matches. Local
 persistence (Dexie) is **distinct** from the realtime session: the local autosave
@@ -202,6 +205,77 @@ does not go through the worker, while the shared state lives in the Durable Obje
 
 Details of the migration from Node/Fastify to Cloudflare: see
 [`MIGRATION.md`](./MIGRATION.md).
+
+---
+
+## 8. Dynamic weather
+
+The campaign has a dynamic weather system that also affects exploration/travel
+times. It lives in `MapDocument.weather` (`WeatherState = { current, season,
+consecutiveDays, previous?, lastUpdatedTurn? }`), so it is part of the
+exploration/campaign state — not the permanent geography. Every new map/session
+starts at **sunny / spring**; old maps without a `weather` field are normalised to
+that default on load (`ensureWeatherState`).
+
+**Weighted algorithm** (`client/src/data/weather.ts`, tunable data in
+`client/src/data/weatherRules.ts`) — the next-day weather is chosen from a *weight*
+pipeline, not hard-coded percentages:
+
+1. `getBaseSeasonWeights(season)` — base weights per season.
+2. `applyScaleLatitudeModifiers(...)` — **north/south** only on `kingdoms`/
+   `continents` maps: the band is derived from the tile's `r`. Winter north →
+   more snow/blizzard; winter south → more rain; summer south → more heatwave;
+   summer north → less heatwave.
+3. `applyTerrainModifiers(...)` — current tile **+ its 6 neighbours**: mountains/
+   snow/adjacent-snow boost snow/blizzard; desert/adjacent boosts sunny/heatwave and
+   **enables** sandstorm (and cuts rain/snow); volcano/volcanic **enables** ashfall
+   and (only on the volcanic tile) rare eruption — adjacency enables ashfall but not
+   eruption; swamp/water boost fog/rain; forest a little.
+4. `applyContinuityModifiers(...)` — **inertia**: the current weather gets a bonus
+   that decays with `consecutiveDays` and eventually drops below its base
+   probability (e.g. rain ≈ 50 % → 40 % → 29 % → 19 % → 12 %). Per-type curves in
+   `WEATHER_CONTINUITY` (sunny/ashfall persist; storm/blizzard/eruption are brief).
+5. `normalizeWeights` → `weightedRandom(rng)` (rng is injectable for tests).
+
+The DM can also set the weather **manually** (no roll; `consecutiveDays` resets to
+1). A roll happens on **Advance day** and on each **adjacent move / shortest-path
+move** (the travel cost then uses the updated weather). `rollWeather` returns the
+`probabilities` and a `reasonSummary` (i18n keys), shown to the DM.
+
+**Weather travel modifiers** — the travel-time engine is a single **modifier
+pipeline** (`computeTravel` in `client/src/data/travel.ts`); `crossingDays` is a thin
+wrapper over it, so pathfinding and time accrual automatically include weather.
+Order of application:
+
+1. base terrain time (terrain × vehicle × scale — unchanged);
+2. overlay modifiers (road/river/snow/volcanic/symbol);
+3. weather base modifier (terrain-aware: e.g. rain ×1.15, ×1.35 on swamp; storm
+   ×1.75 in mountains; snow ×2.0 on snow overlay; sandstorm ×2.0 in desert, ×1.5
+   near desert; ashfall ×1.75 near a volcano);
+4. weather+terrain contextual modifiers (extra multiplier or block: rain+swamp,
+   storm+mountain, snow+mountain, fog+forest/swamp, heatwave+desert,
+   sandstorm+desert, ashfall+volcanic, **volcanicEruption+volcanic = blocked**);
+5. cap: the product of the modifiers is capped at `WEATHER_TRAVEL_CAP` (×3.0) unless
+   movement is blocked; a warning is surfaced when the cap bites;
+6. final result as `TravelTimeResult { baseDays, finalDays, blocked, modifiers[],
+   warnings[] }` — the DM panel shows base time, each modifier, the total and any
+   block. With `sunny`/`cloudy` there are no weather modifiers, so times are
+   identical to before the feature (backward-compatible).
+
+Some weathers **block** movement outright (`blocksMovement`): blizzard on
+mountain/water, sandstorm in desert, storm for small boats on water, eruption on the
+volcanic tile.
+
+**UI** (Exploration tab): season selector, current-weather selector (manual
+override), consecutive-days readout, **Advance day** button, next-day forecast bars,
+factor log, and a **Travel effects** panel for the party's current hex. Players see a
+read-only version (current weather + effects); only the DM can change it.
+
+**Realtime** — the weather is stored in the `MapDocument`, so it synchronises over
+the **existing `fullState` channel** (GM-authoritative): when the DM changes the
+season/weather, rolls, or advances a day, the Durable Object rebroadcasts the state
+and players update. Players cannot change it (the DO rejects non-DM edits) — no extra
+protocol messages were needed.
 
 ---
 

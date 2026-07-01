@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_TILE,
+  defaultWeatherState,
+  ensureWeatherState,
   keyOf,
   nextRotation,
   parseKey,
@@ -15,14 +17,18 @@ import {
   type MapShape,
   type Orientation,
   type Rotation,
+  type Season,
   type Vehicle,
+  type WeatherState,
+  type WeatherType,
 } from '@/model/types'
 import { axialDistance, type Axial } from '@/hex/coordinates'
 import { mapCoords } from '@/hex/layout'
 import { centerHex, lineOfSight } from '@/hex/los'
 import { shortestPath } from '@/hex/pathfind'
 import { OVERLAYS, TERRAINS, overlayAllowedOn } from '@/data/catalog'
-import { DEFAULT_SCALE, DEFAULT_VEHICLE, canEnter, crossingDays, kmPerHex } from '@/data/travel'
+import { DEFAULT_SCALE, DEFAULT_VEHICLE, crossingDays, isBlocked, kmPerHex } from '@/data/travel'
+import { applyRoll, rollWeather, setManualWeather, type WeatherRollResult } from '@/data/weather'
 import { emitFog, emitFullState, emitPatch } from '@/sync/bridge'
 import type { ConnectionStatus, PlayerInfo, Role } from '@/sync/protocol'
 import { DEFAULT_LANG, type Lang } from '@/i18n'
@@ -46,6 +52,8 @@ interface PlayerUndoEntry {
   travel: number | undefined
   /** distanza percorsa precedente (km) per ripristinarla all'annulla */
   distance: number | undefined
+  /** meteo precedente, per ripristinarlo all'annulla */
+  weather: WeatherState | undefined
 }
 
 export type DistanceUnit = 'km' | 'mi'
@@ -86,6 +94,8 @@ interface MapState {
   playerUndo: PlayerUndoEntry[]
   /** spostamento non adiacente in attesa di conferma (popup) */
   pendingPlayerMove: { q: number; r: number } | null
+  /** ultimo esito del roll meteo (transient, per il pannello probabilità) */
+  weatherRoll: WeatherRollResult | null
 
   // --- sessione realtime ---
   sessionId: string | null
@@ -116,6 +126,12 @@ interface MapState {
   setScale: (scale: MapScale) => void
   /** Cambia il mezzo di trasporto attivo. */
   setVehicle: (vehicle: Vehicle) => void
+  /** Cambia la stagione della campagna (influenza le probabilità meteo). */
+  setSeason: (season: Season) => void
+  /** Override manuale del meteo attuale (DM): nessun roll, consecutiveDays=1. */
+  setWeatherManual: (weather: WeatherType) => void
+  /** Avanza di un giorno: lancia il roll meteo sul tile corrente e aggiorna lo stato. */
+  advanceDay: () => void
   /** Aggiunge/sottrae manualmente al tempo di viaggio (delta in giorni). */
   adjustTravelDays: (deltaDays: number) => void
   /** Imposta/rimuove un effetto a tutta casella sull'hex; on=false azzera tutti
@@ -276,6 +292,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   distanceUnit: 'km',
   playerUndo: [],
   pendingPlayerMove: null,
+  weatherRoll: null,
 
   sessionId: null,
   sessionRole: null,
@@ -298,6 +315,7 @@ export const useMapStore = create<MapState>((set, get) => ({
         hoursPerDay: 24,
         scale: DEFAULT_SCALE,
         vehicle: DEFAULT_VEHICLE,
+        weather: defaultWeatherState(),
       }
       // Terreno di base: inizializza ogni casella della mappa al terreno scelto
       // (es. "water" per una mappa marina). Vuoto = caselle non dipinte.
@@ -328,7 +346,13 @@ export const useMapStore = create<MapState>((set, get) => ({
       return { doc, playerUndo: [] }
     }),
 
-  loadDoc: (doc) => set({ doc, playerUndo: [], pendingPlayerMove: null }),
+  loadDoc: (doc) =>
+    set({
+      doc: { ...doc, weather: ensureWeatherState(doc.weather) },
+      playerUndo: [],
+      pendingPlayerMove: null,
+      weatherRoll: null,
+    }),
   setMode: (mode) => set({ mode }),
   setTool: (tool) =>
     set((s) => {
@@ -339,7 +363,8 @@ export const useMapStore = create<MapState>((set, get) => ({
         tool === 'explore' &&
         (s.brushKind === 'terrain' || s.brushKind === 'overlay' || s.brushKind === 'effect')
       ) {
-        return { tool, brushKind: 'fog' }
+        // entrando in Esplorazione lo strumento di default è "Sposta giocatori"
+        return { tool, brushKind: 'players' }
       }
       return { tool }
     }),
@@ -380,6 +405,37 @@ export const useMapStore = create<MapState>((set, get) => ({
       return { doc }
     }),
 
+  setSeason: (season) =>
+    set((s) => {
+      if (!s.doc) return {}
+      const weather = { ...ensureWeatherState(s.doc.weather), season }
+      const doc = { ...s.doc, weather }
+      emitFullState(doc)
+      return { doc }
+    }),
+
+  setWeatherManual: (weather) =>
+    set((s) => {
+      if (!s.doc) return {}
+      const next = setManualWeather(ensureWeatherState(s.doc.weather), weather)
+      const doc = { ...s.doc, weather: next }
+      emitFullState(doc)
+      return { doc, weatherRoll: null }
+    }),
+
+  advanceDay: () =>
+    set((s) => {
+      if (!s.doc) return {}
+      const center = s.doc.playerPos ?? centerHex(s.doc)
+      if (!center) return {}
+      const key = keyOf(center.q, center.r)
+      const state = ensureWeatherState(s.doc.weather)
+      const result = rollWeather({ map: s.doc, tileKey: key, season: state.season, currentWeather: state })
+      const doc = { ...s.doc, weather: applyRoll(state, result.next) }
+      emitFullState(doc)
+      return { doc, weatherRoll: result }
+    }),
+
   adjustTravelDays: (deltaDays) =>
     set((s) => {
       if (!s.doc) return {}
@@ -392,7 +448,13 @@ export const useMapStore = create<MapState>((set, get) => ({
         doc,
         playerUndo: [
           ...s.playerUndo,
-          { pos: s.doc.playerPos ?? null, fog: {}, travel: prevTravel, distance: prevDist },
+          {
+            pos: s.doc.playerPos ?? null,
+            fog: {},
+            travel: prevTravel,
+            distance: prevDist,
+            weather: ensureWeatherState(s.doc.weather),
+          },
         ],
       }
     }),
@@ -526,9 +588,12 @@ export const useMapStore = create<MapState>((set, get) => ({
         playerPos: exploration.playerPos ?? s.doc.playerPos,
         travelDays: exploration.travelDays ?? s.doc.travelDays,
         travelDistanceKm: exploration.travelDistanceKm ?? s.doc.travelDistanceKm,
+        weather: exploration.weather
+          ? ensureWeatherState(exploration.weather)
+          : ensureWeatherState(s.doc.weather),
       }
       emitFullState(doc)
-      return { doc, playerUndo: [], pendingPlayerMove: null }
+      return { doc, playerUndo: [], pendingPlayerMove: null, weatherRoll: null }
     }),
 
   movePlayers: (q, r) =>
@@ -538,27 +603,46 @@ export const useMapStore = create<MapState>((set, get) => ({
       const prevPos = s.doc.playerPos ?? null
       const prevTravel = s.doc.travelDays
       const prevDist = s.doc.travelDistanceKm
+      const prevWeather = ensureWeatherState(s.doc.weather)
       const { tiles, changed } = computeFogForMove(s.doc, pos)
-      // tempo/distanza: prima posizione -> 0; passo adiacente -> +attraversamento.
+      const adjacent = !!prevPos && axialDistance(prevPos, pos) === 1
+
+      // Costo del passo col meteo CORRENTE (si attraversa "ora"); mai Infinity
+      // (il gate in requestMovePlayers esclude gli hex bloccati, ma restiamo difensivi).
       let travelDays: number
       let travelDistanceKm: number | undefined
       if (!prevPos) {
         travelDays = 0
         travelDistanceKm = 0
-      } else if (axialDistance(prevPos, pos) === 1) {
-        travelDays = (prevTravel ?? 0) + crossingDays(s.doc, keyOf(q, r))
+      } else if (adjacent) {
+        const cross = crossingDays(s.doc, keyOf(q, r))
+        travelDays = (prevTravel ?? 0) + (Number.isFinite(cross) ? cross : 0)
         travelDistanceKm = (prevDist ?? 0) + kmPerHex(s.doc)
       } else {
         travelDays = prevTravel ?? 0
         travelDistanceKm = prevDist
       }
-      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm }
+
+      // Meteo: un roll all'arrivo di ogni passo adiacente (il giorno avanza).
+      let weather = prevWeather
+      let weatherRoll: WeatherRollResult | null = s.weatherRoll
+      if (adjacent) {
+        weatherRoll = rollWeather({
+          map: s.doc,
+          tileKey: keyOf(q, r),
+          season: prevWeather.season,
+          currentWeather: prevWeather,
+        })
+        weather = applyRoll(prevWeather, weatherRoll.next)
+      }
+      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm, weather }
       emitFullState(doc)
       return {
         doc,
+        weatherRoll,
         playerUndo: [
           ...s.playerUndo,
-          { pos: prevPos, fog: changed, travel: prevTravel, distance: prevDist },
+          { pos: prevPos, fog: changed, travel: prevTravel, distance: prevDist, weather: prevWeather },
         ],
       }
     }),
@@ -566,13 +650,15 @@ export const useMapStore = create<MapState>((set, get) => ({
   requestMovePlayers: (q, r) => {
     const s = get()
     if (!s.doc) return
-    // non si può esplorare dove il mezzo attivo non può andare
-    if (!canEnter(s.doc, keyOf(q, r))) return
     const prev = s.doc.playerPos
+    // La scelta della posizione INIZIALE è sempre libera (nessuna restrizione).
     if (!prev) {
-      s.movePlayers(q, r) // prima posizione
+      s.movePlayers(q, r)
       return
     }
+    // Le mosse successive rispettano i blocchi (mezzo/terreno o meteo): non ci si
+    // può spostare dove il mezzo attuale non può andare, neppure col percorso rapido.
+    if (isBlocked(s.doc, keyOf(q, r))) return
     const d = axialDistance(prev, { q, r })
     if (d === 0) return
     if (d === 1) {
@@ -589,10 +675,13 @@ export const useMapStore = create<MapState>((set, get) => ({
       const prevPos = s.doc.playerPos ?? null
       const prevTravel = s.doc.travelDays
       const prevDist = s.doc.travelDistanceKm
+      const prevWeather = ensureWeatherState(s.doc.weather)
       let travelDays = prevTravel ?? 0
       let travelDistanceKm = prevDist
       let tiles = s.doc.tiles
       let changed: Record<string, FogState> = {}
+      let weather = prevWeather
+      let weatherRoll: WeatherRollResult | null = s.weatherRoll
 
       if (mode === 'shortest' && prevPos) {
         // esplora il tragitto (LoS lungo il percorso) e somma durata + distanza
@@ -605,20 +694,29 @@ export const useMapStore = create<MapState>((set, get) => ({
         const res = computeFogAlongPath(s.doc, pathHexes)
         tiles = res.tiles
         changed = res.changed
+        // un roll meteo all'arrivo del tragitto
+        weatherRoll = rollWeather({
+          map: s.doc,
+          tileKey: keyOf(pos.q, pos.r),
+          season: prevWeather.season,
+          currentWeather: prevWeather,
+        })
+        weather = applyRoll(prevWeather, weatherRoll.next)
       } else if (mode === 'manual') {
         // sposta senza esplorazione automatica, aggiungendo le ore indicate
         const hpd = s.doc.hoursPerDay ?? 24
         travelDays = (prevTravel ?? 0) + Math.max(0, hours ?? 0) / hpd
       }
-      // 'noTravel': nessun cambiamento di fog, tempo o distanza
+      // 'noTravel': nessun cambiamento di fog, tempo, distanza o meteo
 
-      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm }
+      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm, weather }
       emitFullState(doc)
       return {
         doc,
+        weatherRoll,
         playerUndo: [
           ...s.playerUndo,
-          { pos: prevPos, fog: changed, travel: prevTravel, distance: prevDist },
+          { pos: prevPos, fog: changed, travel: prevTravel, distance: prevDist, weather: prevWeather },
         ],
         pendingPlayerMove: null,
       }
@@ -641,9 +739,10 @@ export const useMapStore = create<MapState>((set, get) => ({
         playerPos: last.pos ?? undefined,
         travelDays: last.travel,
         travelDistanceKm: last.distance,
+        weather: last.weather ?? ensureWeatherState(s.doc.weather),
       }
       emitFullState(doc)
-      return { doc, playerUndo: s.playerUndo.slice(0, -1) }
+      return { doc, playerUndo: s.playerUndo.slice(0, -1), weatherRoll: null }
     }),
 
   resetExploration: () =>
@@ -659,9 +758,10 @@ export const useMapStore = create<MapState>((set, get) => ({
         playerPos: undefined,
         travelDays: undefined,
         travelDistanceKm: undefined,
+        weather: defaultWeatherState(),
       }
       emitFullState(doc)
-      return { doc, playerUndo: [], pendingPlayerMove: null }
+      return { doc, playerUndo: [], pendingPlayerMove: null, weatherRoll: null }
     }),
 
   resetTravel: () =>

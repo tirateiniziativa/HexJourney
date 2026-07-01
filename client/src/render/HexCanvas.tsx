@@ -47,6 +47,10 @@ export default function HexCanvas() {
           if (s.mode !== 'gm' || s.sessionRole === 'player') return
           s.requestMovePlayers(q, r)
         },
+        isExplorationMode: () => {
+          const s = useMapStore.getState()
+          return s.mode === 'gm' && s.tool === 'explore'
+        },
         isAnchorMode: () => {
           const s = useMapStore.getState()
           return (

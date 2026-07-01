@@ -20,6 +20,7 @@ import {
   type Point,
 } from '@/hex/layout'
 import { EMPTY_COLOR, OVERLAYS, TERRAINS, getTileDef, overlayColor, terrainColor } from '@/data/catalog'
+import { isBlocked } from '@/data/travel'
 
 export type RenderMode = 'gm' | 'player'
 
@@ -39,6 +40,8 @@ export interface PixiCallbacks {
   isPlayerMode?: () => boolean
   /** sposta i giocatori sull'hex (q, r) */
   onMovePlayers?: (q: number, r: number) => void
+  /** true in modalità esplorazione: disegna i bordi rossi sugli hex bloccati */
+  isExplorationMode?: () => boolean
 }
 
 const ANCHOR_CAP = 700
@@ -81,6 +84,7 @@ export class PixiManager {
   private overlayLayer = new Container()
   private fogLayer = new Container()
   private playerGfx = new Graphics()
+  private blockedGfx = new Graphics()
   private anchorGfx = new Graphics()
   private hoverGfx = new Graphics()
   private renderMode: RenderMode = 'gm'
@@ -159,6 +163,7 @@ export class PixiManager {
     this.world.addChild(this.pathGfx)
     this.world.addChild(this.overlayLayer)
     this.world.addChild(this.fogLayer)
+    this.world.addChild(this.blockedGfx)
     this.world.addChild(this.playerGfx)
     this.world.addChild(this.anchorGfx)
     this.world.addChild(this.hoverGfx)
@@ -956,7 +961,31 @@ export class PixiManager {
     this.drawEffects(visible)
     this.drawPaths(visible)
     this.updateAnchors(visible)
+    this.drawBlocked(visible)
     this.drawPlayer()
+  }
+
+  /** Bordi rossi sottili sugli hex dove i giocatori NON possono essere spostati
+   * col mezzo/meteo attuali. Solo in modalità esplorazione; salta l'hex corrente
+   * (che ha già il bordo blu). Molto più sottile del bordo dei giocatori. */
+  private drawBlocked(visible: Set<string>): void {
+    const g = this.blockedGfx
+    g.clear()
+    if (!this.doc || this.relCorners.length !== 6) return
+    if (!this.callbacks.isExplorationMode?.()) return
+    const playerKey = this.doc.playerPos
+      ? keyOf(this.doc.playerPos.q, this.doc.playerPos.r)
+      : null
+    const width = Math.max(1, this.doc.hexSize * 0.05) // ~1/3 del bordo blu (0.16)
+    for (const key of visible) {
+      if (key === playerKey) continue
+      if (!isBlocked(this.doc, key)) continue
+      const cell = this.cellByKey.get(key)
+      if (!cell) continue
+      const pts = this.relCorners.flatMap((c) => [cell.x + c.x, cell.y + c.y])
+      g.poly(pts)
+      g.stroke({ width, color: 0xd0504c, alpha: 0.7, alignment: 0 })
+    }
   }
 
   /** Bordo blu sull'esagono dei giocatori. */

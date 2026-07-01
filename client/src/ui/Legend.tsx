@@ -2,6 +2,7 @@ import { OVERLAYS, TERRAINS, type TileDef } from '@/data/catalog'
 import { formatTravel, terrainCrossingDays } from '@/data/travel'
 import { useMapStore } from '@/store/mapStore'
 import { useT } from '@/i18n/useT'
+import CollapsibleSection from './CollapsibleSection'
 
 const LAND_OVERLAYS = OVERLAYS.filter((o) => o.on === 'land' || o.on === 'both')
 const WATER_OVERLAYS = OVERLAYS.filter((o) => o.on === 'water' || o.on === 'both')
@@ -28,8 +29,7 @@ export default function Legend() {
   )
 
   return (
-    <div className="panel-section">
-      <div className="panel-title">{t('legend.title')}</div>
+    <CollapsibleSection title={t('legend.title')}>
       <ul className="legend">
         {TERRAINS.map((td) => (
           <li key={td.id}>
@@ -47,6 +47,6 @@ export default function Legend() {
       <ul className="legend">{WATER_OVERLAYS.map(overlayItem)}</ul>
 
       <p className="muted small">{t('legend.note')}</p>
-    </div>
+    </CollapsibleSection>
   )
 }

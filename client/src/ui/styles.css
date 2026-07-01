@@ -799,3 +799,94 @@
   padding: 24px 20px;
   width: min(92vw, 420px);
 }
+
+/* ---- Weather panel (tab Esplorazione) ---- */
+.weather-probs {
+  list-style: none;
+  margin: 6px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.weather-probs li {
+  display: grid;
+  grid-template-columns: 1fr 64px 36px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.wp-bar {
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.wp-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+.wp-pct {
+  text-align: right;
+  color: var(--muted);
+}
+.travel-breakdown {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.travel-breakdown li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+}
+.travel-breakdown .tb-total {
+  border-top: 1px solid var(--border);
+  margin-top: 3px;
+  padding-top: 5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* ---- Collapsible sections (sidebar) ---- */
+.collapsible-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-bottom: 10px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  text-align: left;
+}
+.collapsible-header:hover {
+  color: var(--text);
+}
+.collapsible-chevron {
+  flex: 0 0 auto;
+  width: 10px;
+  font-size: 9px;
+}
+.collapsible-title {
+  flex: 1 1 auto;
+}
+/* compressa senza sommario: header più compatto */
+.panel-section.collapsible:not(.open) .collapsible-header {
+  margin-bottom: 0;
+}
+.panel-section.collapsible:not(.open):has(.travel-field, .swatch, .legend) .collapsible-header {
+  margin-bottom: 8px;
+}

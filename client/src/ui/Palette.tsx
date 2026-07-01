@@ -6,6 +6,8 @@ import { useT } from '@/i18n/useT'
 import type { FogState, MapScale, Vehicle } from '@/model/types'
 import type { Device } from './useDevice'
 import Legend from './Legend'
+import WeatherPanel from './WeatherPanel'
+import CollapsibleSection from './CollapsibleSection'
 
 const HOURS_OPTIONS = Array.from({ length: 30 - 6 + 1 }, (_, i) => i + 6) // 6..30
 
@@ -231,8 +233,15 @@ export default function Palette({
           <p className="muted small">{t('palette.player.readonly')}</p>
         </div>
 
-        <div className="panel-section">
-          <div className="panel-title">{t('travel.title')}</div>
+        <CollapsibleSection
+          title={t('travel.title')}
+          summary={
+            <div className="travel-field">
+              <span className="muted small">{t('travel.estimate')}</span>
+              <strong className="travel-value">{travelText}</strong>
+            </div>
+          }
+        >
           <div className="travel-field">
             <span className="muted small">{t('explore.vehicle')}</span>
             <strong>{t(`vehicle.${vehicle}`)}</strong>
@@ -249,7 +258,9 @@ export default function Palette({
             <span className="muted small">{t('travel.distance')}</span>
             <strong className="travel-value">{distanceText}</strong>
           </div>
-        </div>
+        </CollapsibleSection>
+
+        <WeatherPanel readOnly />
 
         <Legend />
       </>,
@@ -370,93 +381,35 @@ export default function Palette({
     </>
   )
 
-  // --- ESPLORAZIONE: mezzo + viaggio + fog + giocatori + leggenda ---
+  // Bottone "Sposta giocatori": usato sia come sommario (compresso) sia dentro
+  // la sezione espansa. È lo strumento di default entrando in Esplorazione.
+  const moveButton = (
+    <button
+      className={'swatch full' + (brushKind === 'players' ? ' active' : '')}
+      onClick={() => {
+        setPlayerTool()
+        closeDrawer()
+      }}
+      title={t('players.move.title')}
+    >
+      <span className="swatch-color" style={{ background: '#3a9bdc' }} />
+      <span className="swatch-name">{t('players.move')}</span>
+    </button>
+  )
+
+  const estimateSummary = (
+    <div className="travel-field">
+      <span className="muted small">{t('travel.estimate')}</span>
+      <strong className="travel-value">{travelText}</strong>
+    </div>
+  )
+
+  // --- ESPLORAZIONE: giocatori + mezzo + viaggio + meteo + fog + leggenda ---
   const exploreSections = (
     <>
-      <div className="panel-section">
-        <div className="panel-title">{t('explore.vehicle')}</div>
-        <label className="field">
-          <select value={vehicle} onChange={(e) => setVehicle(e.target.value as Vehicle)}>
-            {VEHICLES.map((v) => (
-              <option key={v} value={v}>
-                {t(`vehicle.${v}`)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="panel-section">
-        <div className="panel-title">{t('travel.title')}</div>
-        <label className="field">
-          <span>{t('travel.hoursPerDay')}</span>
-          <select value={hoursPerDay} onChange={(e) => setHoursPerDay(Number(e.target.value))}>
-            {HOURS_OPTIONS.map((h) => (
-              <option key={h} value={h}>
-                {h}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="travel-field">
-          <span className="muted small">{t('travel.estimate')}</span>
-          <strong className="travel-value">{travelText}</strong>
-        </div>
-        <div className="travel-field">
-          <span className="muted small">{t('travel.distance')}</span>
-          <strong className="travel-value">{distanceText}</strong>
-        </div>
-        <div className="fog-actions">
-          <button className="btn" onClick={() => adjustTravelDays(0.25)}>
-            {t('players.quarterPlus')}
-          </button>
-          <button className="btn" onClick={() => adjustTravelDays(-0.25)}>
-            {t('players.quarterMinus')}
-          </button>
-        </div>
-      </div>
-
-      <div className="panel-section">
-        <div className="panel-title">{t('palette.fog')}</div>
-        <div className="swatch-grid">
-          {FOG_OPTIONS.map((f) => (
-            <button
-              key={f.state}
-              className={'swatch' + (brushKind === 'fog' && fogBrush === f.state ? ' active' : '')}
-              onClick={() => {
-                setFogBrush(f.state)
-                closeDrawer()
-              }}
-              title={t('fog.brushTitle', { label: t(f.key) })}
-            >
-              <span className="swatch-color" style={{ background: f.color }} />
-              <span className="swatch-name">{t(f.key)}</span>
-            </button>
-          ))}
-        </div>
-        <div className="fog-actions">
-          <button className="btn" onClick={revealAll}>
-            {t('fog.revealAll')}
-          </button>
-          <button className="btn" onClick={hideAll}>
-            {t('fog.hideAll')}
-          </button>
-        </div>
-      </div>
-
-      <div className="panel-section">
-        <div className="panel-title">{t('players.title')}</div>
-        <button
-          className={'swatch full' + (brushKind === 'players' ? ' active' : '')}
-          onClick={() => {
-            setPlayerTool()
-            closeDrawer()
-          }}
-          title={t('players.move.title')}
-        >
-          <span className="swatch-color" style={{ background: '#3a9bdc' }} />
-          <span className="swatch-name">{t('players.move')}</span>
-        </button>
+      {/* Giocatori in cima; compresso mostra solo "Sposta giocatori" */}
+      <CollapsibleSection title={t('players.title')} summary={moveButton}>
+        {moveButton}
         <div className="fog-actions">
           <button className="btn" onClick={undoPlayers} disabled={playerUndoCount === 0}>
             {t('players.undo')}
@@ -487,7 +440,81 @@ export default function Palette({
             ? t('players.position', { q: playerPos.q, r: playerPos.r })
             : t('players.noPosition')}
         </p>
+      </CollapsibleSection>
+
+      {/* Trasporto: sezione semplice, non comprimibile */}
+      <div className="panel-section">
+        <div className="panel-title">{t('explore.vehicle')}</div>
+        <label className="field">
+          <select value={vehicle} onChange={(e) => setVehicle(e.target.value as Vehicle)}>
+            {VEHICLES.map((v) => (
+              <option key={v} value={v}>
+                {t(`vehicle.${v}`)}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
+
+      {/* Viaggio; compresso mostra solo la stima del tempo */}
+      <CollapsibleSection title={t('travel.title')} summary={estimateSummary}>
+        <label className="field">
+          <span>{t('travel.hoursPerDay')}</span>
+          <select value={hoursPerDay} onChange={(e) => setHoursPerDay(Number(e.target.value))}>
+            {HOURS_OPTIONS.map((h) => (
+              <option key={h} value={h}>
+                {h}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="travel-field">
+          <span className="muted small">{t('travel.estimate')}</span>
+          <strong className="travel-value">{travelText}</strong>
+        </div>
+        <div className="travel-field">
+          <span className="muted small">{t('travel.distance')}</span>
+          <strong className="travel-value">{distanceText}</strong>
+        </div>
+        <div className="fog-actions">
+          <button className="btn" onClick={() => adjustTravelDays(0.25)}>
+            {t('players.quarterPlus')}
+          </button>
+          <button className="btn" onClick={() => adjustTravelDays(-0.25)}>
+            {t('players.quarterMinus')}
+          </button>
+        </div>
+      </CollapsibleSection>
+
+      <WeatherPanel />
+
+      {/* Fog of War; compresso non mostra niente */}
+      <CollapsibleSection title={t('palette.fog')}>
+        <div className="swatch-grid">
+          {FOG_OPTIONS.map((f) => (
+            <button
+              key={f.state}
+              className={'swatch' + (brushKind === 'fog' && fogBrush === f.state ? ' active' : '')}
+              onClick={() => {
+                setFogBrush(f.state)
+                closeDrawer()
+              }}
+              title={t('fog.brushTitle', { label: t(f.key) })}
+            >
+              <span className="swatch-color" style={{ background: f.color }} />
+              <span className="swatch-name">{t(f.key)}</span>
+            </button>
+          ))}
+        </div>
+        <div className="fog-actions">
+          <button className="btn" onClick={revealAll}>
+            {t('fog.revealAll')}
+          </button>
+          <button className="btn" onClick={hideAll}>
+            {t('fog.hideAll')}
+          </button>
+        </div>
+      </CollapsibleSection>
 
       <Legend />
     </>

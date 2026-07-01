@@ -13,11 +13,16 @@
 import {
   getTile,
   isWaterTerrain,
+  keyOf,
+  parseKey,
   type HexTile,
   type MapDocument,
   type MapScale,
   type Vehicle,
+  type WeatherType,
 } from '@/model/types'
+import { axialNeighbors } from '@/hex/coordinates'
+import { WEATHER_TERRAIN_COMBO, WEATHER_TRAVEL, WEATHER_TRAVEL_CAP } from './weatherRules'
 
 export const DEFAULT_SCALE: MapScale = 'regional'
 export const DEFAULT_VEHICLE: Vehicle = 'foot'
@@ -195,26 +200,195 @@ function baseDays(doc: MapDocument, terrain: string): number {
   return (km / WATER_KM_DAY.boat.water) * 1.0
 }
 
-/** Giorni per attraversare l'hex `key` col mezzo/scala correnti, overlay inclusi.
- * Ritorna Infinity se l'esagono è impercorribile per il mezzo attivo. */
-export function crossingDays(doc: MapDocument, key: string): number {
-  if (!canEnter(doc, key)) return Infinity
+// ---- pipeline dei modificatori (overlay + meteo) --------------------------
+
+export type ModifierSource =
+  | 'terrain'
+  | 'overlay'
+  | 'weather'
+  | 'weatherTerrain'
+  | 'transport'
+  | 'scale'
+
+/** Un singolo fattore che modifica il tempo di attraversamento di un hex. */
+export interface TravelTimeModifier {
+  source: ModifierSource
+  /** id stabile (es. 'road', 'rain', 'rain+swamp') per label i18n e debug */
+  id: string
+  /** moltiplicatore sul tempo (assente = solo blocco) */
+  multiplier?: number
+  /** giorni fissi aggiunti (per estensioni future) */
+  flatDays?: number
+  /** true = impedisce del tutto il movimento sull'hex */
+  blocksMovement?: boolean
+  /** true = il moltiplicatore è stato ridotto dal cap massimo */
+  capped?: boolean
+}
+
+/** Esito dettagliato del calcolo del tempo di un hex (per UI/log). */
+export interface TravelTimeResult {
+  baseDays: number
+  finalDays: number // Infinity se bloccato
+  blocked: boolean
+  modifiers: TravelTimeModifier[]
+  /** chiavi i18n di eventuali avvisi (es. cap applicato) */
+  warnings: string[]
+}
+
+/** Modificatori dovuti agli overlay del tile (strada/fiume/neve/…). */
+function overlayModifiers(tile: HexTile, terrain: string, v: Vehicle): TravelTimeModifier[] {
+  const mods: TravelTimeModifier[] = []
+  if (tile.snow) mods.push({ source: 'overlay', id: 'snow', multiplier: snowMod(v) })
+  if (tile.volcanic) mods.push({ source: 'overlay', id: 'volcanic', multiplier: volcanicMod(v) })
+  if (hasPath(tile, 'river')) mods.push({ source: 'overlay', id: 'river', multiplier: riverMod(v) })
+  if (hasPath(tile, 'road')) mods.push({ source: 'overlay', id: 'road', multiplier: roadMod(v) })
+  if (tile.overlay) {
+    const m = symbolMod(v, terrain, tile.overlay)
+    if (m !== 1.0) mods.push({ source: 'overlay', id: tile.overlay, multiplier: m })
+  }
+  return mods
+}
+
+function neighborsOf(doc: MapDocument, key: string): HexTile[] {
+  const { q, r } = parseKey(key)
+  return axialNeighbors({ q, r }).map((n) => getTile(doc, keyOf(n.q, n.r)))
+}
+
+/** Il meteo corrente blocca del tutto il movimento su questo hex? */
+function weatherBlocks(weather: WeatherType, terrain: string, tile: HexTile, v: Vehicle): boolean {
+  const water = isWaterTerrain(terrain)
+  switch (weather) {
+    case 'storm':
+      return v === 'boat' && water // tempesta: blocca le imbarcazioni piccole in acqua
+    case 'blizzard':
+      return terrain === 'mountain' || water
+    case 'sandstorm':
+      return terrain === 'desert'
+    case 'volcanicEruption':
+      return terrain === 'volcano' || !!tile.volcanic
+    default:
+      return false
+  }
+}
+
+/** Modificatore base del meteo corrente (terrain-aware) + eventuale blocco. */
+function weatherBaseModifier(
+  doc: MapDocument,
+  key: string,
+  terrain: string,
+  tile: HexTile,
+  v: Vehicle,
+): TravelTimeModifier | null {
+  const weather = doc.weather?.current
+  if (!weather) return null
+  const rule = WEATHER_TRAVEL[weather]
+  const candidates: number[] = [rule.general]
+  if (tile.snow && rule.snowOverlay != null) candidates.push(rule.snowOverlay)
+  const terrMul = rule.terrain?.[terrain]
+  if (terrMul != null) candidates.push(terrMul)
+  if (rule.nearDesert != null && neighborsOf(doc, key).some((t) => (t.terrain || '') === 'desert')) {
+    candidates.push(rule.nearDesert)
+  }
+  if (
+    rule.nearVolcanic != null &&
+    neighborsOf(doc, key).some((t) => (t.terrain || '') === 'volcano' || t.volcanic)
+  ) {
+    candidates.push(rule.nearVolcanic)
+  }
+  const multiplier = Math.max(...candidates)
+  const blocked = weatherBlocks(weather, terrain, tile, v)
+  if (multiplier === 1.0 && !blocked) return null
+  return { source: 'weather', id: weather, multiplier, blocksMovement: blocked || undefined }
+}
+
+/** Modificatori contestuali meteo + terreno (malus extra o blocco). */
+function weatherTerrainModifiers(doc: MapDocument, terrain: string, tile: HexTile): TravelTimeModifier[] {
+  const weather = doc.weather?.current
+  if (!weather) return []
+  const isVolcanic = terrain === 'volcano' || !!tile.volcanic
+  const mods: TravelTimeModifier[] = []
+  for (const c of WEATHER_TERRAIN_COMBO) {
+    if (c.weather !== weather) continue
+    const match = c.volcanic ? isVolcanic : c.terrain === terrain
+    if (!match) continue
+    mods.push({
+      source: 'weatherTerrain',
+      id: `${weather}+${c.volcanic ? 'volcanic' : c.terrain}`,
+      multiplier: c.multiplier,
+      blocksMovement: c.block || undefined,
+    })
+  }
+  return mods
+}
+
+/** Calcolo dettagliato del tempo di attraversamento di un hex: base (terreno +
+ * mezzo + scala) + pipeline di modificatori (overlay + meteo + combinazioni),
+ * con cap massimo. Riusa terreno/overlay/percorribilità già esistenti. */
+export function computeTravel(doc: MapDocument, key: string): TravelTimeResult {
   const tile = getTile(doc, key)
   const terrain = tile.terrain || 'plains'
   const v = doc.vehicle ?? DEFAULT_VEHICLE
-  let days: number
-  if (isWaterTerrain(terrain) && tile.ice && isLandVehicle(v)) {
-    // attraversamento del ghiaccio via terra: a grande difficoltà
-    days = (kmPerHex(doc) / LAND_KM_DAY[v]) * ICE_LAND_MULT
-  } else {
-    days = baseDays(doc, terrain)
+  const warnings: string[] = []
+
+  // percorribilità del mezzo (terreno/overlay): blocco "duro"
+  if (!canEnter(doc, key)) {
+    return {
+      baseDays: Infinity,
+      finalDays: Infinity,
+      blocked: true,
+      modifiers: [{ source: 'terrain', id: terrain, blocksMovement: true }],
+      warnings,
+    }
   }
-  if (tile.snow) days *= snowMod(v)
-  if (tile.volcanic) days *= volcanicMod(v)
-  if (hasPath(tile, 'river')) days *= riverMod(v)
-  if (hasPath(tile, 'road')) days *= roadMod(v)
-  if (tile.overlay) days *= symbolMod(v, terrain, tile.overlay)
-  return days
+
+  // base: terreno + mezzo + scala (con caso ghiaccio via terra)
+  let base: number
+  if (isWaterTerrain(terrain) && tile.ice && isLandVehicle(v)) {
+    base = (kmPerHex(doc) / LAND_KM_DAY[v]) * ICE_LAND_MULT
+  } else {
+    base = baseDays(doc, terrain)
+  }
+
+  const weatherBase = weatherBaseModifier(doc, key, terrain, tile, v)
+  const modifiers: TravelTimeModifier[] = [
+    ...overlayModifiers(tile, terrain, v),
+    ...(weatherBase ? [weatherBase] : []),
+    ...weatherTerrainModifiers(doc, terrain, tile),
+  ]
+
+  // blocco dovuto al meteo (tempesta/bufera/tempesta di sabbia/eruzione)
+  if (modifiers.some((m) => m.blocksMovement)) {
+    return { baseDays: base, finalDays: Infinity, blocked: true, modifiers, warnings }
+  }
+
+  let product = 1
+  for (const m of modifiers) if (m.multiplier != null) product *= m.multiplier
+  if (product > WEATHER_TRAVEL_CAP) {
+    product = WEATHER_TRAVEL_CAP
+    warnings.push('travel.capApplied')
+    for (const m of modifiers) if (m.source === 'weather' || m.source === 'weatherTerrain') m.capped = true
+  }
+  let finalDays = base * product
+  for (const m of modifiers) if (m.flatDays) finalDays += m.flatDays
+
+  return { baseDays: base, finalDays, blocked: false, modifiers, warnings }
+}
+
+/** Giorni per attraversare l'hex `key` col mezzo/scala/meteo correnti.
+ * Ritorna Infinity se l'esagono è impercorribile o bloccato dal meteo. */
+export function crossingDays(doc: MapDocument, key: string): number {
+  const r = computeTravel(doc, key)
+  return r.blocked ? Infinity : r.finalDays
+}
+
+/** Movimento bloccato per il mezzo+meteo correnti (check leggero, senza calcolare
+ * i moltiplicatori: adatto al gate dei movimenti e al rendering per-hex). */
+export function isBlocked(doc: MapDocument, key: string): boolean {
+  if (!canEnter(doc, key)) return true
+  const weather = doc.weather?.current
+  if (!weather) return false
+  const tile = getTile(doc, key)
+  return weatherBlocks(weather, tile.terrain || 'plains', tile, doc.vehicle ?? DEFAULT_VEHICLE)
 }
 
 /** Tempo base di un terreno "nudo" (per la leggenda): Infinity se impercorribile. */
@@ -236,6 +410,8 @@ export function formatTravel(
   hourAbbr = 'h',
   minAbbr = 'm',
 ): string {
+  // Impercorribile/bloccato (Infinity) o non calcolabile (NaN): niente numeri sporchi.
+  if (!Number.isFinite(days)) return '—'
   const minutesPerDay = hoursPerDay * 60
   const totalMinutes = Math.round(days * minutesPerDay)
   const d = Math.floor(totalMinutes / minutesPerDay)

@@ -173,6 +173,20 @@ Volcano +2, Hills/Mesa +1, others 0), `edgesAdjacent`, `nextRotation`, `isWaterT
   manual hours / shortest path); only adjacent and shortest path add time+distance.
   `pathfind` skips impassable hexes and keeps the lexicographic road preference.
   Undo/Reset time/Reset exploration also cover distance.
+- **Weather (dynamic)**: lives in `MapDocument.weather` (`WeatherState`, part of
+  exploration/campaign state), default sunny/spring; old maps normalized via
+  `ensureWeatherState`. Weighted pipeline in `data/weather.ts` (config in
+  `data/weatherRules.ts`): season base → latitude (north/south, only kingdoms/
+  continents) → terrain+6 neighbors → continuity (inertia) → normalize →
+  `weightedRandom(rng)`. `rollWeather` returns probabilities + `reasonSummary`
+  (i18n keys). A roll fires on Advance day and on adjacent/shortest-path moves; the
+  DM can also set it manually (no roll). **Travel** is a single modifier pipeline
+  (`computeTravel` → `TravelTimeResult`; `crossingDays` wraps it): base → overlay →
+  weather base (terrain-aware) → weather+terrain combos → cap `WEATHER_TRAVEL_CAP`
+  (×3, unless `blocksMovement`). Sunny/cloudy add no modifiers (backward-compatible).
+  Realtime: synced via the **existing `fullState`** path (GM-authoritative), no new
+  protocol messages. UI in `ui/WeatherPanel.tsx` (Exploration tab; read-only for
+  players).
 - **Roads/rivers (linear overlays)**: they are NOT symbol-overlays, they are
   **anchor-based paths** (`HexTile.paths`). Guided selection: click an anchor (a
   side), work on both hexes of that side; usable anchors (non-adjacent) have a yellow
