@@ -48,8 +48,10 @@ export default function RandomEventsPanel({ readOnly = false }: { readOnly?: boo
   // Vista giocatore: stato attivo/inattivo + SOLO l'evento della casella attuale
   // (se confermato/scelto dal DM proprio su quella casella).
   const currentKey = doc.playerPos ? keyOf(doc.playerPos.q, doc.playerPos.r) : null
+  // Mostrato ai player se l'evento (confermato o scelto dal DM, anche a eventi
+  // disattivati) appartiene alla casella attuale del gruppo.
   const tileEvent =
-    state.enabled && state.lastConfirmedEvent && state.lastConfirmedTile && state.lastConfirmedTile === currentKey
+    state.lastConfirmedEvent && state.lastConfirmedTile && state.lastConfirmedTile === currentKey
       ? state.lastConfirmedEvent
       : null
   const statusLine = (
@@ -71,15 +73,30 @@ export default function RandomEventsPanel({ readOnly = false }: { readOnly?: boo
     </div>
   )
 
+  const manualInsert = (
+    <div className="manual-move">
+      <select value={chosen} onChange={(e) => setChosen(e.target.value as RandomEventType)}>
+        {RANDOM_EVENT_TYPES.map((e) => (
+          <option key={e} value={e}>
+            {t(`randomEvent.${e}`)}
+          </option>
+        ))}
+      </select>
+      <button className="btn" onClick={() => setManual(chosen)}>
+        {t('randomEvents.setManual')}
+      </button>
+    </div>
+  )
+
   return (
     <CollapsibleSection
       title={t('randomEvents.title')}
-      summary={readOnly ? (state.enabled ? tileLine : statusLine) : lastConfirmedLine}
+      summary={readOnly ? (tileEvent ? tileLine : statusLine) : lastConfirmedLine}
     >
       {readOnly ? (
         <>
           {statusLine}
-          {state.enabled && tileLine}
+          {tileLine}
           <p className="muted small">{t('randomEvents.readonly')}</p>
         </>
       ) : (
@@ -89,28 +106,22 @@ export default function RandomEventsPanel({ readOnly = false }: { readOnly?: boo
             <span>{t('randomEvents.enabled')}</span>
           </label>
 
-          {state.enabled ? (
+          {state.enabled && (
+            <div className="fog-actions">
+              <button className="btn" onClick={rollNow}>
+                {t('randomEvents.generate')}
+              </button>
+            </div>
+          )}
+
+          {/* Inserimento manuale del DM: disponibile anche a eventi disattivati.
+              Quando c'è una proposta si usa "Scegli questo" nel riquadro sotto. */}
+          {!pending && manualInsert}
+
+          {!state.enabled && <p className="muted small">{t('randomEvents.disabledHint')}</p>}
+
+          {state.enabled && (
             <>
-              <div className="fog-actions">
-                <button className="btn" onClick={rollNow}>
-                  {t('randomEvents.generate')}
-                </button>
-              </div>
-
-              {/* Inserimento manuale: scegli il tipo e applicalo come evento avvenuto */}
-              <div className="manual-move">
-                <select value={chosen} onChange={(e) => setChosen(e.target.value as RandomEventType)}>
-                  {RANDOM_EVENT_TYPES.map((e) => (
-                    <option key={e} value={e}>
-                      {t(`randomEvent.${e}`)}
-                    </option>
-                  ))}
-                </select>
-                <button className="btn" onClick={() => setManual(chosen)}>
-                  {t('randomEvents.setManual')}
-                </button>
-              </div>
-
               {/* Proposta in attesa: SOLO il DM la vede (mai sincronizzata ai player) */}
               {pending && (
                 <div className="event-proposed">
@@ -174,11 +185,10 @@ export default function RandomEventsPanel({ readOnly = false }: { readOnly?: boo
                 </>
               )}
 
-              {lastConfirmedLine}
             </>
-          ) : (
-            <p className="muted small">{t('randomEvents.disabledHint')}</p>
           )}
+
+          {lastConfirmedLine}
         </>
       )}
     </CollapsibleSection>

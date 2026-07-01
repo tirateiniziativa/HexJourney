@@ -336,7 +336,9 @@ or with **Generate event**, a roll happens on the destination tile:
   reveals it to players; **Discard** is a full revert of the roll (pre-roll state
   restored, no cooldown/momentum change); **Choose this** treats a manually picked
   event as generated. The panel shows current probabilities, the factors that fired,
-  and the last confirmed event.
+  and the last confirmed event. The DM can also **insert an event manually** at any
+  time (pick the type → *Set event*) — available **even while the system is disabled**;
+  it is treated as generated and shown to players on the party's current hex.
 
 **Security / realtime.** The **proposed** event and its snapshot live **only in the
 DM's client** (transient state) and are never synced. Only the persistent state

@@ -528,8 +528,8 @@ export const useMapStore = create<MapState>((set, get) => ({
   setRandomEventManual: (event) =>
     set((s) => {
       if (!s.doc) return {}
+      // disponibile anche a eventi disattivati: è una scelta esplicita del DM
       const state = ensureRandomEventsState(s.doc.randomEvents)
-      if (!state.enabled) return {}
       const tileKey = s.doc.playerPos ? keyOf(s.doc.playerPos.q, s.doc.playerPos.r) : undefined
       // trattato come evento avvenuto (aggiorna lastConfirmed/cooldown), niente proposta
       const randomEvents = applyReplaceEvent(state, event, tileKey)
