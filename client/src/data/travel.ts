@@ -160,13 +160,36 @@ function symbolMod(v: Vehicle, terrain: string, overlay: string): number {
 
 // ---- percorribilità -------------------------------------------------------
 
+/** Overlay-simbolo che, su una casella d'acqua, la rendono accessibile ai mezzi
+ * di terra (ponti/moli/insediamenti costieri, passaggi). La strada è un percorso
+ * (tile.paths) ed è gestita a parte in waterAllowsLand. */
+const WATER_LAND_ACCESS_OVERLAYS: ReadonlySet<string> = new Set([
+  'ruins',
+  'village',
+  'city',
+  'fortress',
+  'cave',
+  'sanctuary',
+  'dungeon',
+  'shoal',
+])
+
+/** Un mezzo di terra può stare su questa casella d'acqua grazie a un overlay
+ * (strada/insediamento/passaggio)? */
+function waterAllowsLand(tile: HexTile): boolean {
+  if (hasPath(tile, 'road')) return true // strada = ponte/passaggio
+  return !!tile.overlay && WATER_LAND_ACCESS_OVERLAYS.has(tile.overlay)
+}
+
 /** Percorribilità pura per (mezzo, terreno, tassello). */
 function canEnterTile(v: Vehicle, terrain: string, tile: HexTile): boolean {
   const water = isWaterTerrain(terrain)
   // ghiaccio: l'acqua ghiacciata blocca i mezzi d'acqua ma è valicabile via terra
   if (water && tile.ice) return isLandVehicle(v)
   if (isLandVehicle(v)) {
-    if (water) return false // niente ponti/guadi modellati
+    // sull'acqua i mezzi di terra passano solo se un overlay lo consente
+    // (strada/ponte, insediamento, secca, passaggio); altrimenti no.
+    if (water) return waterAllowsLand(tile)
     if (v === 'carriage' && (terrain === 'mountain' || terrain === 'volcano' || terrain === 'swamp')) {
       return hasPath(tile, 'road')
     }

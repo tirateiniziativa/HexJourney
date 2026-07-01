@@ -180,6 +180,13 @@ Mirror import; for exploration-only it checks that the `mapId` matches. Local
 persistence (Dexie) is **distinct** from the realtime session: the local autosave
 does not go through the worker, while the shared state lives in the Durable Object.
 
+**Preset (built-in) maps** — the **Maps** panel lists ready-to-load maps that ship
+with the app and are available to **every** user and session (e.g. *Tristora*).
+They are static assets under `client/public/presets/` and registered in
+`client/src/data/presets.ts`; loading one creates an independent working copy (fresh
+id), which the DM can then edit, save locally, and share in a realtime session like
+any other map.
+
 ---
 
 ## 7. Technical notes
@@ -276,6 +283,72 @@ the **existing `fullState` channel** (GM-authoritative): when the DM changes the
 season/weather, rolls, or advances a day, the Durable Object rebroadcasts the state
 and players update. Players cannot change it (the DO rejects non-DM edits) — no extra
 protocol messages were needed.
+
+---
+
+## 9. Random events
+
+An optional, data-driven random-events system under the **Exploration** tab, built
+like the weather (weighted pipeline + dynamic modifiers). It lives in
+`MapDocument.randomEvents` (`RandomEventsState`), part of the exploration/campaign
+state; disabled by default, and old maps are normalised on load.
+
+**Categories & base weights** (weights, not isolated percentages):
+
+| Event | Weight |
+|---|---|
+| extremelyPositive | 1 |
+| veryPositive | 6 |
+| positive | 13 |
+| none | 60 |
+| negative | 13 |
+| veryNegative | 6 |
+| extremelyNegative | 1 |
+
+**Weighted pipeline** (`client/src/data/randomEvents.ts`, config in
+`randomEventRules.ts`): base → terrain → overlay → weather → no-event momentum →
+positive/negative cooldown → normalize → `weightedRandom(rng)`.
+
+- **Terrain**: plains/desert raise `none` (fewer events); forest/mountain/mesa lower
+  `none` and raise positive/negative (a little the "very" tiers, barely the
+  "extremely" ones); hills/water/deepwater/swamp are neutral.
+- **Overlay**: road/snow/ice lower events; river/volcanic(land)/shoal raise them.
+  **coralReef conflict** (listed as both): resolved explicitly — reef **on water**
+  raises events (navigation hazards), reef **on land** lowers them. Settlement
+  overlays (ruins/village/city/fortress/cave/sanctuary/oasis/dungeon) **do not**
+  trigger events by their mere presence (no modifier).
+- **Weather**: sunny → slightly more `none`, fewer extremes; storm/blizzard/
+  sandstorm/ashfall → much less `none`, more negative/very-negative;
+  volcanicEruption → almost always negative, `none` collapses, positives ≈ 0. Full
+  table in `WEATHER_EVENT_MODS`.
+- **No-event momentum**: each event-less step lowers `none` progressively (with a
+  floor, never 0) and slightly boosts event categories.
+- **Cooldown**: a confirmed positive event sets `positiveCooldownSteps = 5`; the
+  same polarity is ~0 on the next step and recovers over 5 steps (curve
+  `5→0.0 … 0→1.0`). Same for negatives. On a `none` roll the cooldowns tick down by 1.
+
+**DM ↔ player.** Only the DM enables events, generates/rolls, and confirms /
+discards / manually replaces the proposal. On movement (adjacent or shortest-path)
+or with **Generate event**, a roll happens on the destination tile:
+
+- `none` → applied immediately (momentum/cooldown update), nothing shown to players;
+- non-`none` → a **proposed event** shown to the DM only. **Confirm** applies it and
+  reveals it to players; **Discard** is a full revert of the roll (pre-roll state
+  restored, no cooldown/momentum change); **Choose this** treats a manually picked
+  event as generated. The panel shows current probabilities, the factors that fired,
+  and the last confirmed event.
+
+**Security / realtime.** The **proposed** event and its snapshot live **only in the
+DM's client** (transient state) and are never synced. Only the persistent state
+(enabled / lastConfirmedEvent / lastConfirmedTile / steps / cooldowns) rides the
+existing GM-authoritative `fullState` channel, so players receive **only confirmed
+events** — never the pending one — with no extra protocol messages and no worker
+changes. The **player view** shows whether events are active and, of the confirmed
+events, **only the one attached to the party's current hex** (`lastConfirmedTile`):
+moving onto a hex without a confirmed event shows none.
+
+**Export/import.** `randomEvents` is exploration/campaign state: the full map and the
+exploration-only export include it; the clean map resets it to defaults (disabled).
 
 ---
 

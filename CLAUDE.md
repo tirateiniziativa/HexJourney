@@ -76,7 +76,9 @@ client/        Vite SPA (workspace @hexjourney/client)
     i18n/        index.ts (Lang, LANGS, DEFAULT_LANG='en', 6 languages) + useT.ts
     persistence/ db (Dexie), io (export/import; errors = i18n KEYS), useAutosave
     sync/        protocol (Worker URL config + alias), SyncClient (per-session WS), bridge, useSync
-    data/        tiles.json, catalog, travel (crossingDays/canEnter/formatTravel/…)
+    data/        tiles.json, catalog, travel (crossingDays/canEnter/formatTravel/…),
+                 weather + weatherRules, randomEvents + randomEventRules,
+                 presets (built-in maps served from public/presets/)
 worker/        Cloudflare Worker (workspace @hexjourney/worker)
   src/index.ts        router (/health, POST /session, /session/:id/websocket → DO)
   src/HexSession.ts   Durable Object (Hibernation API, SQLite storage, DM authority)
@@ -187,6 +189,20 @@ Volcano +2, Hills/Mesa +1, others 0), `edgesAdjacent`, `nextRotation`, `isWaterT
   Realtime: synced via the **existing `fullState`** path (GM-authoritative), no new
   protocol messages. UI in `ui/WeatherPanel.tsx` (Exploration tab; read-only for
   players).
+- **Random events (dynamic)**: optional, data-driven, lives in
+  `MapDocument.randomEvents` (`RandomEventsState`, exploration/campaign state),
+  default disabled; old maps normalized via `ensureRandomEventsState`. Weighted
+  pipeline in `data/randomEvents.ts` (config `data/randomEventRules.ts`): base →
+  terrain → overlay → weather → no-event momentum → +/- cooldown → normalize →
+  `weightedRandom`. Rolls on adjacent/shortest moves and on "Generate event". A
+  `none` applies immediately; a non-`none` becomes a **proposed** event the DM
+  confirms / discards (full revert) / replaces. **Security**: the pending proposal
+  + pre-roll snapshot are **client-only GM state** (`store.pendingRandomEvent`,
+  never synced); only the persistent state rides the existing `fullState` path, so
+  players see **only confirmed** events (no new protocol messages, no worker
+  changes). `ensureRandomEventsState` strips non-persistent fields; transitions
+  never write `pendingEvent` into the doc. UI in `ui/RandomEventsPanel.tsx`
+  (Exploration tab, collapsible; read-only for players).
 - **Roads/rivers (linear overlays)**: they are NOT symbol-overlays, they are
   **anchor-based paths** (`HexTile.paths`). Guided selection: click an anchor (a
   side), work on both hexes of that side; usable anchors (non-adjacent) have a yellow

@@ -48,6 +48,51 @@ export interface WeatherState {
   lastUpdatedTurn?: number
 }
 
+/** Categorie di evento casuale (dal più positivo al più negativo). */
+export type RandomEventType =
+  | 'extremelyPositive'
+  | 'veryPositive'
+  | 'positive'
+  | 'none'
+  | 'negative'
+  | 'veryNegative'
+  | 'extremelyNegative'
+
+export interface RandomEventProbability {
+  event: RandomEventType
+  weight: number
+  probability: number
+}
+
+/** Stato degli Eventi Casuali (parte dello stato di esplorazione/campagna).
+ * NOTA sicurezza: nel documento sincronizzato vengono scritti SOLO i campi
+ * persistenti (enabled/lastConfirmedEvent/stepsSinceLastEvent/cooldown). Il
+ * `pendingEvent` e le probabilità dell'ultima estrazione restano lato client del
+ * GM (mai inviati ai player). I campi opzionali qui sotto esistono per il tipo. */
+export interface RandomEventsState {
+  enabled: boolean
+  lastConfirmedEvent?: RandomEventType
+  /** chiave "q,r" della casella cui appartiene l'ultimo evento confermato:
+   * i player mostrano l'evento solo se coincide con la posizione attuale. */
+  lastConfirmedTile?: string
+  pendingEvent?: RandomEventType
+  stepsSinceLastEvent: number
+  positiveCooldownSteps: number
+  negativeCooldownSteps: number
+  lastRollProbabilities?: RandomEventProbability[]
+  lastRollReasons?: string[]
+}
+
+export const RANDOM_EVENT_TYPES: readonly RandomEventType[] = [
+  'extremelyPositive',
+  'veryPositive',
+  'positive',
+  'none',
+  'negative',
+  'veryNegative',
+  'extremelyNegative',
+]
+
 export const SEASONS: readonly Season[] = ['spring', 'summer', 'autumn', 'winter']
 
 export const WEATHER_TYPES: readonly WeatherType[] = [
@@ -127,6 +172,8 @@ export interface MapDocument {
   vehicle?: Vehicle
   /** stato meteo della campagna; default sunny/spring (vedi defaultWeatherState) */
   weather?: WeatherState
+  /** stato Eventi Casuali della campagna; default disabilitato (persistenti soltanto) */
+  randomEvents?: RandomEventsState
 }
 
 /** I terreni d'acqua (no overlay di terra, percorribili solo da mezzi d'acqua). */
@@ -152,6 +199,8 @@ export interface ExplorationDocument {
   travelDistanceKm?: number
   /** stato meteo (fa parte dello stato di esplorazione/campagna) */
   weather?: WeatherState
+  /** stato Eventi Casuali (fa parte dello stato di esplorazione/campagna) */
+  randomEvents?: RandomEventsState
 }
 
 export const EMPTY_TERRAIN = ''
@@ -264,6 +313,53 @@ export function ensureWeatherState(w: unknown): WeatherState {
     }
   }
   return defaultWeatherState()
+}
+
+// ---- Eventi Casuali: default, validatori e normalizzazione -----------------
+
+const RANDOM_EVENT_SET: ReadonlySet<string> = new Set<RandomEventType>(RANDOM_EVENT_TYPES)
+
+export function isRandomEventType(v: unknown): v is RandomEventType {
+  return typeof v === 'string' && RANDOM_EVENT_SET.has(v)
+}
+
+export function isRandomEventsState(v: unknown): v is RandomEventsState {
+  if (typeof v !== 'object' || v === null) return false
+  const s = v as Record<string, unknown>
+  return (
+    typeof s.enabled === 'boolean' &&
+    typeof s.stepsSinceLastEvent === 'number' &&
+    typeof s.positiveCooldownSteps === 'number' &&
+    typeof s.negativeCooldownSteps === 'number'
+  )
+}
+
+/** Stato Eventi Casuali di default: disattivato, contatori a zero. */
+export function defaultRandomEventsState(): RandomEventsState {
+  return {
+    enabled: false,
+    stepsSinceLastEvent: 0,
+    positiveCooldownSteps: 0,
+    negativeCooldownSteps: 0,
+  }
+}
+
+/** Normalizza (retro-compatibilità mappe vecchie) e SCARTA i campi non
+ * persistenti (pendingEvent, probabilità/motivi dell'ultima estrazione): questi
+ * vivono solo lato GM e non devono mai finire nel documento condiviso. */
+export function ensureRandomEventsState(v: unknown): RandomEventsState {
+  if (isRandomEventsState(v)) {
+    const s = v as RandomEventsState
+    return {
+      enabled: !!s.enabled,
+      lastConfirmedEvent: isRandomEventType(s.lastConfirmedEvent) ? s.lastConfirmedEvent : undefined,
+      lastConfirmedTile: isTileKey(s.lastConfirmedTile) ? s.lastConfirmedTile : undefined,
+      stepsSinceLastEvent: Math.max(0, Math.floor(s.stepsSinceLastEvent) || 0),
+      positiveCooldownSteps: Math.min(5, Math.max(0, Math.floor(s.positiveCooldownSteps) || 0)),
+      negativeCooldownSteps: Math.min(5, Math.max(0, Math.floor(s.negativeCooldownSteps) || 0)),
+    }
+  }
+  return defaultRandomEventsState()
 }
 
 /** Validazione minima e difensiva di un MapDocument in ingresso. */

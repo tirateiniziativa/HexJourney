@@ -9,6 +9,7 @@
 import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_TILE,
+  defaultRandomEventsState,
   defaultWeatherState,
   type ExplorationDocument,
   type FogState,
@@ -57,8 +58,9 @@ export function exportCleanMap(doc: MapDocument): string {
     tiles,
     travelDays: doc.playerPos ? 0 : undefined,
     travelDistanceKm: doc.playerPos ? 0 : undefined,
-    // il meteo appartiene all'esplorazione: la mappa "pulita" riparte da sunny/spring
+    // meteo ed eventi appartengono all'esplorazione: la mappa "pulita" riparte dai default
     weather: defaultWeatherState(),
+    randomEvents: defaultRandomEventsState(),
   }
   if (clean.playerPos) {
     const los = lineOfSight(clean, clean.playerPos)
@@ -84,6 +86,7 @@ export function buildExploration(doc: MapDocument): ExplorationDocument {
     travelDays: doc.travelDays,
     travelDistanceKm: doc.travelDistanceKm,
     weather: doc.weather,
+    randomEvents: doc.randomEvents,
   }
 }
 

@@ -9,6 +9,7 @@ import {
 } from '@/persistence/db'
 import { useMapStore } from '@/store/mapStore'
 import { useT } from '@/i18n/useT'
+import { PRESET_MAPS, type PresetMap } from '@/data/presets'
 
 export default function MapsPanel({ onClose }: { onClose: () => void }) {
   const t = useT()
@@ -28,6 +29,17 @@ export default function MapsPanel({ onClose }: { onClose: () => void }) {
     if (d) {
       loadDoc(d)
       onClose()
+    }
+  }
+  /** Carica un preset (mappa predefinita, disponibile a tutti) come copia di lavoro. */
+  const onLoadPreset = async (p: PresetMap) => {
+    setBusy(true)
+    try {
+      const d = await p.load()
+      loadDoc(d)
+      onClose()
+    } catch {
+      setBusy(false)
     }
   }
   const onDuplicate = async (id: string) => {
@@ -54,8 +66,30 @@ export default function MapsPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <div className="dialog wide" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>{t('maps.title')}</h2>
+        <h2>{t('maps.heading')}</h2>
 
+        {PRESET_MAPS.length > 0 && (
+          <>
+            <div className="panel-title">{t('maps.presets')}</div>
+            <ul className="map-list">
+              {PRESET_MAPS.map((p) => (
+                <li key={`preset:${p.key}`} className="map-row">
+                  <div className="map-info">
+                    <strong>{p.name}</strong>
+                    <span className="muted small">{t('maps.presetHint')}</span>
+                  </div>
+                  <div className="map-actions">
+                    <button className="btn" onClick={() => onLoadPreset(p)} disabled={busy}>
+                      {t('common.load')}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        <div className="panel-title">{t('maps.title')}</div>
         <ul className="map-list">
           {maps.length === 0 && <li className="muted">{t('maps.empty')}</li>}
           {maps.map((m) => (

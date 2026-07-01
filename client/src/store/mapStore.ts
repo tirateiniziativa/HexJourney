@@ -2,7 +2,9 @@ import { create } from 'zustand'
 import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_TILE,
+  defaultRandomEventsState,
   defaultWeatherState,
+  ensureRandomEventsState,
   ensureWeatherState,
   keyOf,
   nextRotation,
@@ -16,6 +18,8 @@ import {
   type MapScale,
   type MapShape,
   type Orientation,
+  type RandomEventsState,
+  type RandomEventType,
   type Rotation,
   type Season,
   type Vehicle,
@@ -29,6 +33,14 @@ import { shortestPath } from '@/hex/pathfind'
 import { OVERLAYS, TERRAINS, overlayAllowedOn } from '@/data/catalog'
 import { DEFAULT_SCALE, DEFAULT_VEHICLE, crossingDays, isBlocked, kmPerHex } from '@/data/travel'
 import { applyRoll, rollWeather, setManualWeather, type WeatherRollResult } from '@/data/weather'
+import {
+  applyNoneRoll,
+  confirmRandomEvent as applyConfirmEvent,
+  replaceRandomEvent as applyReplaceEvent,
+  rollRandomEvent,
+  type PendingRandomEventResolution,
+  type RandomEventRollResult,
+} from '@/data/randomEvents'
 import { emitFog, emitFullState, emitPatch } from '@/sync/bridge'
 import type { ConnectionStatus, PlayerInfo, Role } from '@/sync/protocol'
 import { DEFAULT_LANG, type Lang } from '@/i18n'
@@ -54,6 +66,8 @@ interface PlayerUndoEntry {
   distance: number | undefined
   /** meteo precedente, per ripristinarlo all'annulla */
   weather: WeatherState | undefined
+  /** stato Eventi Casuali precedente, per ripristinarlo all'annulla */
+  randomEvents: RandomEventsState | undefined
 }
 
 export type DistanceUnit = 'km' | 'mi'
@@ -96,6 +110,11 @@ interface MapState {
   pendingPlayerMove: { q: number; r: number } | null
   /** ultimo esito del roll meteo (transient, per il pannello probabilità) */
   weatherRoll: WeatherRollResult | null
+  /** proposta di evento casuale in attesa di decisione del DM (SOLO client GM,
+   * mai sincronizzata: i player non la vedono) */
+  pendingRandomEvent: PendingRandomEventResolution | null
+  /** ultimo roll di evento casuale (transient, per probabilità/motivi nella UI) */
+  randomEventRoll: RandomEventRollResult | null
 
   // --- sessione realtime ---
   sessionId: string | null
@@ -132,6 +151,19 @@ interface MapState {
   setWeatherManual: (weather: WeatherType) => void
   /** Avanza di un giorno: lancia il roll meteo sul tile corrente e aggiorna lo stato. */
   advanceDay: () => void
+  /** Attiva/disattiva gli Eventi Casuali. */
+  setRandomEventsEnabled: (enabled: boolean) => void
+  /** Genera manualmente un evento sul tile corrente (senza muoversi). */
+  rollRandomEventNow: () => void
+  /** Inserisce direttamente un evento scelto dal DM (trattato come generato),
+   * senza estrazione né proposta. */
+  setRandomEventManual: (event: RandomEventType) => void
+  /** DM: conferma l'evento proposto (lo invia ai player, aggiorna i pesi). */
+  confirmRandomEvent: () => void
+  /** DM: scarta l'evento proposto (annullamento totale del roll). */
+  discardRandomEvent: () => void
+  /** DM: sostituisce con un evento scelto manualmente (trattato come generato). */
+  replaceRandomEvent: (event: RandomEventType) => void
   /** Aggiunge/sottrae manualmente al tempo di viaggio (delta in giorni). */
   adjustTravelDays: (deltaDays: number) => void
   /** Imposta/rimuove un effetto a tutta casella sull'hex; on=false azzera tutti
@@ -277,6 +309,32 @@ function computeFogAlongPath(
   return { tiles, changed }
 }
 
+/** Esegue un roll di evento casuale sul tile `key` (col meteo del doc passato) e
+ * ne calcola l'esito: se disattivato non fa nulla; se "none" applica subito
+ * l'esito allo stato persistente (nessuna proposta); altrimenti lascia lo stato
+ * invariato e produce una proposta PENDING (solo lato GM). */
+function resolveEventRoll(
+  doc: MapDocument,
+  key: string,
+): { randomEvents: RandomEventsState; pending: PendingRandomEventResolution | null; roll: RandomEventRollResult | null } {
+  const state = ensureRandomEventsState(doc.randomEvents)
+  if (!state.enabled) return { randomEvents: state, pending: null, roll: null }
+  const roll = rollRandomEvent({ map: doc, tileKey: key, weather: doc.weather, randomEvents: state })
+  if (roll.proposedEvent === 'none') {
+    return { randomEvents: applyNoneRoll(state), pending: null, roll }
+  }
+  return {
+    randomEvents: state, // non applicato finché il DM non decide
+    pending: {
+      proposedEvent: roll.proposedEvent,
+      preRollState: state,
+      probabilities: roll.probabilities,
+      reasonSummary: roll.reasonSummary,
+    },
+    roll,
+  }
+}
+
 export const useMapStore = create<MapState>((set, get) => ({
   doc: null,
   mode: 'gm',
@@ -293,6 +351,8 @@ export const useMapStore = create<MapState>((set, get) => ({
   playerUndo: [],
   pendingPlayerMove: null,
   weatherRoll: null,
+  pendingRandomEvent: null,
+  randomEventRoll: null,
 
   sessionId: null,
   sessionRole: null,
@@ -316,6 +376,7 @@ export const useMapStore = create<MapState>((set, get) => ({
         scale: DEFAULT_SCALE,
         vehicle: DEFAULT_VEHICLE,
         weather: defaultWeatherState(),
+        randomEvents: defaultRandomEventsState(),
       }
       // Terreno di base: inizializza ogni casella della mappa al terreno scelto
       // (es. "water" per una mappa marina). Vuoto = caselle non dipinte.
@@ -348,10 +409,16 @@ export const useMapStore = create<MapState>((set, get) => ({
 
   loadDoc: (doc) =>
     set({
-      doc: { ...doc, weather: ensureWeatherState(doc.weather) },
+      doc: {
+        ...doc,
+        weather: ensureWeatherState(doc.weather),
+        randomEvents: ensureRandomEventsState(doc.randomEvents),
+      },
       playerUndo: [],
       pendingPlayerMove: null,
       weatherRoll: null,
+      pendingRandomEvent: null,
+      randomEventRoll: null,
     }),
   setMode: (mode) => set({ mode }),
   setTool: (tool) =>
@@ -436,6 +503,73 @@ export const useMapStore = create<MapState>((set, get) => ({
       return { doc, weatherRoll: result }
     }),
 
+  setRandomEventsEnabled: (enabled) =>
+    set((s) => {
+      if (!s.doc) return {}
+      const randomEvents = { ...ensureRandomEventsState(s.doc.randomEvents), enabled }
+      const doc = { ...s.doc, randomEvents }
+      emitFullState(doc)
+      // disattivando si annulla anche l'eventuale proposta pending
+      return { doc, pendingRandomEvent: null, randomEventRoll: enabled ? s.randomEventRoll : null }
+    }),
+
+  rollRandomEventNow: () =>
+    set((s) => {
+      if (!s.doc) return {}
+      if (!ensureRandomEventsState(s.doc.randomEvents).enabled) return {}
+      const center = s.doc.playerPos ?? centerHex(s.doc)
+      if (!center) return {}
+      const ev = resolveEventRoll(s.doc, keyOf(center.q, center.r))
+      const doc = { ...s.doc, randomEvents: ev.randomEvents }
+      emitFullState(doc)
+      return { doc, pendingRandomEvent: ev.pending, randomEventRoll: ev.roll ?? s.randomEventRoll }
+    }),
+
+  setRandomEventManual: (event) =>
+    set((s) => {
+      if (!s.doc) return {}
+      const state = ensureRandomEventsState(s.doc.randomEvents)
+      if (!state.enabled) return {}
+      const tileKey = s.doc.playerPos ? keyOf(s.doc.playerPos.q, s.doc.playerPos.r) : undefined
+      // trattato come evento avvenuto (aggiorna lastConfirmed/cooldown), niente proposta
+      const randomEvents = applyReplaceEvent(state, event, tileKey)
+      const doc = { ...s.doc, randomEvents }
+      emitFullState(doc)
+      return { doc, pendingRandomEvent: null }
+    }),
+
+  confirmRandomEvent: () =>
+    set((s) => {
+      const pending = s.pendingRandomEvent
+      if (!s.doc || !pending) return {}
+      const tileKey = s.doc.playerPos ? keyOf(s.doc.playerPos.q, s.doc.playerPos.r) : undefined
+      const randomEvents = applyConfirmEvent(pending.preRollState, pending.proposedEvent, tileKey)
+      const doc = { ...s.doc, randomEvents }
+      emitFullState(doc) // l'evento confermato raggiunge i player via fullState
+      return { doc, pendingRandomEvent: null }
+    }),
+
+  discardRandomEvent: () =>
+    set((s) => {
+      const pending = s.pendingRandomEvent
+      if (!s.doc || !pending) return {}
+      // annullamento totale del roll: torna allo stato pre-roll (già invariato)
+      const doc = { ...s.doc, randomEvents: pending.preRollState }
+      emitFullState(doc)
+      return { doc, pendingRandomEvent: null }
+    }),
+
+  replaceRandomEvent: (event) =>
+    set((s) => {
+      const pending = s.pendingRandomEvent
+      if (!s.doc || !pending) return {}
+      const tileKey = s.doc.playerPos ? keyOf(s.doc.playerPos.q, s.doc.playerPos.r) : undefined
+      const randomEvents = applyReplaceEvent(pending.preRollState, event, tileKey)
+      const doc = { ...s.doc, randomEvents }
+      emitFullState(doc)
+      return { doc, pendingRandomEvent: null }
+    }),
+
   adjustTravelDays: (deltaDays) =>
     set((s) => {
       if (!s.doc) return {}
@@ -454,6 +588,7 @@ export const useMapStore = create<MapState>((set, get) => ({
             travel: prevTravel,
             distance: prevDist,
             weather: ensureWeatherState(s.doc.weather),
+            randomEvents: ensureRandomEventsState(s.doc.randomEvents),
           },
         ],
       }
@@ -591,9 +726,19 @@ export const useMapStore = create<MapState>((set, get) => ({
         weather: exploration.weather
           ? ensureWeatherState(exploration.weather)
           : ensureWeatherState(s.doc.weather),
+        randomEvents: exploration.randomEvents
+          ? ensureRandomEventsState(exploration.randomEvents)
+          : ensureRandomEventsState(s.doc.randomEvents),
       }
       emitFullState(doc)
-      return { doc, playerUndo: [], pendingPlayerMove: null, weatherRoll: null }
+      return {
+        doc,
+        playerUndo: [],
+        pendingPlayerMove: null,
+        weatherRoll: null,
+        pendingRandomEvent: null,
+        randomEventRoll: null,
+      }
     }),
 
   movePlayers: (q, r) =>
@@ -604,6 +749,7 @@ export const useMapStore = create<MapState>((set, get) => ({
       const prevTravel = s.doc.travelDays
       const prevDist = s.doc.travelDistanceKm
       const prevWeather = ensureWeatherState(s.doc.weather)
+      const prevRandom = ensureRandomEventsState(s.doc.randomEvents)
       const { tiles, changed } = computeFogForMove(s.doc, pos)
       const adjacent = !!prevPos && axialDistance(prevPos, pos) === 1
 
@@ -623,9 +769,12 @@ export const useMapStore = create<MapState>((set, get) => ({
         travelDistanceKm = prevDist
       }
 
-      // Meteo: un roll all'arrivo di ogni passo adiacente (il giorno avanza).
+      // Meteo + Eventi Casuali: un roll all'arrivo di ogni passo adiacente.
       let weather = prevWeather
       let weatherRoll: WeatherRollResult | null = s.weatherRoll
+      let randomEvents = prevRandom
+      let pendingRandomEvent = s.pendingRandomEvent
+      let randomEventRoll = s.randomEventRoll
       if (adjacent) {
         weatherRoll = rollWeather({
           map: s.doc,
@@ -634,15 +783,29 @@ export const useMapStore = create<MapState>((set, get) => ({
           currentWeather: prevWeather,
         })
         weather = applyRoll(prevWeather, weatherRoll.next)
+        // gli eventi usano il meteo aggiornato sul tile d'arrivo
+        const ev = resolveEventRoll({ ...s.doc, weather }, keyOf(q, r))
+        randomEvents = ev.randomEvents
+        pendingRandomEvent = ev.pending
+        randomEventRoll = ev.roll ?? randomEventRoll
       }
-      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm, weather }
+      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm, weather, randomEvents }
       emitFullState(doc)
       return {
         doc,
         weatherRoll,
+        pendingRandomEvent,
+        randomEventRoll,
         playerUndo: [
           ...s.playerUndo,
-          { pos: prevPos, fog: changed, travel: prevTravel, distance: prevDist, weather: prevWeather },
+          {
+            pos: prevPos,
+            fog: changed,
+            travel: prevTravel,
+            distance: prevDist,
+            weather: prevWeather,
+            randomEvents: prevRandom,
+          },
         ],
       }
     }),
@@ -676,12 +839,16 @@ export const useMapStore = create<MapState>((set, get) => ({
       const prevTravel = s.doc.travelDays
       const prevDist = s.doc.travelDistanceKm
       const prevWeather = ensureWeatherState(s.doc.weather)
+      const prevRandom = ensureRandomEventsState(s.doc.randomEvents)
       let travelDays = prevTravel ?? 0
       let travelDistanceKm = prevDist
       let tiles = s.doc.tiles
       let changed: Record<string, FogState> = {}
       let weather = prevWeather
       let weatherRoll: WeatherRollResult | null = s.weatherRoll
+      let randomEvents = prevRandom
+      let pendingRandomEvent = s.pendingRandomEvent
+      let randomEventRoll = s.randomEventRoll
 
       if (mode === 'shortest' && prevPos) {
         // esplora il tragitto (LoS lungo il percorso) e somma durata + distanza
@@ -702,6 +869,11 @@ export const useMapStore = create<MapState>((set, get) => ({
           currentWeather: prevWeather,
         })
         weather = applyRoll(prevWeather, weatherRoll.next)
+        // ...e un roll di evento casuale sul tile d'arrivo
+        const ev = resolveEventRoll({ ...s.doc, weather }, keyOf(pos.q, pos.r))
+        randomEvents = ev.randomEvents
+        pendingRandomEvent = ev.pending
+        randomEventRoll = ev.roll ?? randomEventRoll
       } else if (mode === 'manual') {
         // sposta senza esplorazione automatica, aggiungendo le ore indicate
         const hpd = s.doc.hoursPerDay ?? 24
@@ -709,14 +881,23 @@ export const useMapStore = create<MapState>((set, get) => ({
       }
       // 'noTravel': nessun cambiamento di fog, tempo, distanza o meteo
 
-      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm, weather }
+      const doc = { ...s.doc, tiles, playerPos: pos, travelDays, travelDistanceKm, weather, randomEvents }
       emitFullState(doc)
       return {
         doc,
         weatherRoll,
+        pendingRandomEvent,
+        randomEventRoll,
         playerUndo: [
           ...s.playerUndo,
-          { pos: prevPos, fog: changed, travel: prevTravel, distance: prevDist, weather: prevWeather },
+          {
+            pos: prevPos,
+            fog: changed,
+            travel: prevTravel,
+            distance: prevDist,
+            weather: prevWeather,
+            randomEvents: prevRandom,
+          },
         ],
         pendingPlayerMove: null,
       }
@@ -740,9 +921,16 @@ export const useMapStore = create<MapState>((set, get) => ({
         travelDays: last.travel,
         travelDistanceKm: last.distance,
         weather: last.weather ?? ensureWeatherState(s.doc.weather),
+        randomEvents: last.randomEvents ?? ensureRandomEventsState(s.doc.randomEvents),
       }
       emitFullState(doc)
-      return { doc, playerUndo: s.playerUndo.slice(0, -1), weatherRoll: null }
+      return {
+        doc,
+        playerUndo: s.playerUndo.slice(0, -1),
+        weatherRoll: null,
+        pendingRandomEvent: null,
+        randomEventRoll: null,
+      }
     }),
 
   resetExploration: () =>
@@ -759,9 +947,17 @@ export const useMapStore = create<MapState>((set, get) => ({
         travelDays: undefined,
         travelDistanceKm: undefined,
         weather: defaultWeatherState(),
+        randomEvents: defaultRandomEventsState(),
       }
       emitFullState(doc)
-      return { doc, playerUndo: [], pendingPlayerMove: null, weatherRoll: null }
+      return {
+        doc,
+        playerUndo: [],
+        pendingPlayerMove: null,
+        weatherRoll: null,
+        pendingRandomEvent: null,
+        randomEventRoll: null,
+      }
     }),
 
   resetTravel: () =>

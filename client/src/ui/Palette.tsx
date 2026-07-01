@@ -7,6 +7,7 @@ import type { FogState, MapScale, Vehicle } from '@/model/types'
 import type { Device } from './useDevice'
 import Legend from './Legend'
 import WeatherPanel from './WeatherPanel'
+import RandomEventsPanel from './RandomEventsPanel'
 import CollapsibleSection from './CollapsibleSection'
 
 const HOURS_OPTIONS = Array.from({ length: 30 - 6 + 1 }, (_, i) => i + 6) // 6..30
@@ -262,6 +263,8 @@ export default function Palette({
 
         <WeatherPanel readOnly />
 
+        <RandomEventsPanel readOnly />
+
         <Legend />
       </>,
     )
@@ -487,6 +490,8 @@ export default function Palette({
       </CollapsibleSection>
 
       <WeatherPanel />
+
+      <RandomEventsPanel />
 
       {/* Fog of War; compresso non mostra niente */}
       <CollapsibleSection title={t('palette.fog')}>
